@@ -17,7 +17,8 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
-SPORTS=("NFL" "NBA")
+# NOTE: NFL commented out during offseason to conserve Odds API quota
+SPORTS=("NBA")  # Add "NFL" back when season starts (~September)
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
