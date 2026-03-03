@@ -1,0 +1,40 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# uv
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+
+# Model artifacts (large binary files)
+saved_models/
+
+# Backtest output
+backtest_results.csv
+equity_curve.png
+
+# LibreOffice lock files
+.~lock.*#
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI Tools
+CLAUDE.MD
+.claude
+GEMINI.MD
+.gemini
+
