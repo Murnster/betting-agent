@@ -22,7 +22,7 @@ OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
 
 ### Prediction Pipeline
 
-1. **Feature engineering** — Elo ratings (8 variants), rolling averages (L3/L5), win streaks, head-to-head record, rest days, home/away splits, plus sport-specific features (NFL: weather/surface; NBA: back-to-back, conference/division)
+1. **Feature engineering** — Elo ratings (8 variants), rolling averages (L3/L5/L10), win streaks, head-to-head record, rest days, home/away splits, plus sport-specific features (NFL: weather/surface; NBA: back-to-back, conference/division, advanced stats — TS%, eFG%, ORTG/DRTG, pace, AST/TOV rates, OREB)
 2. **Dual-model prediction** — XGBoost classifier (win probability) + two regressors (home/away scores), calibrated with IsotonicRegression
 3. **Edge calculation** — Compares model probability against vig-removed implied probability from The Odds API
 4. **Kelly Criterion sizing** — Fractional Kelly with hard caps to size each bet as a % of bankroll
@@ -50,12 +50,20 @@ OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
 
 ## Prerequisites
 
+**Required:**
+
 - Python 3.11+
 - [`uv`](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- PostgreSQL running locally
-- [Ollama](https://ollama.com) with a model pulled (`ollama pull llama3.1:8b`)
-- [The Odds API key](https://the-odds-api.com) (free tier: 500 requests/month)
-- OpenWeatherMap API key (optional, free tier available)
+
+**Required for live picks** (not needed for training or backtesting):
+
+- [The Odds API key](https://the-odds-api.com) (free tier: 500 requests/month) — provides live odds for edge calculation
+
+**Optional:**
+
+- PostgreSQL — enables the daily extract/grade/CLV/ROI workflow. Training and picks work without it (`--no-seed`)
+- [Ollama](https://ollama.com) — adds LLM sentiment analysis to picks (`ollama pull llama3.1:8b`). If unavailable, picks generate from the ML model alone
+- OpenWeatherMap API key — NFL weather features (free tier available)
 
 ---
 
@@ -78,11 +86,11 @@ cp .env.example .env
 Edit `.env` and fill in your keys:
 
 ```env
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/betting_agent
-ODDS_API_KEY=your_key_here
-WEATHER_API_KEY=your_key_here          # optional
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=llama3.1:8b
+ODDS_API_KEY=your_key_here              # required for live picks
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/betting_agent  # optional
+WEATHER_API_KEY=your_key_here           # optional
+OLLAMA_URL=http://localhost:11434/api/generate  # optional
+OLLAMA_MODEL=llama3.1:8b                        # optional
 ```
 
 Strategy defaults (override in `.env` if desired):
@@ -93,23 +101,20 @@ MAX_KELLY_PCT=0.05     # Kelly fraction cap
 MAX_BET_PCT=0.07       # max % of bankroll per bet
 STARTING_BANKROLL=100.0
 SENTIMENT_WEIGHT=0.02  # max edge adjustment from Ollama sentiment (-1 to +1 scaled)
+
+# Discord notifications (optional — one webhook per sport/channel)
+# DISCORD_WEBHOOK_NFL_PICKS=https://discord.com/api/webhooks/...
+# DISCORD_WEBHOOK_NBA_PICKS=https://discord.com/api/webhooks/...
+# DISCORD_WEBHOOK_NFL_RESULTS=https://discord.com/api/webhooks/...
+# DISCORD_WEBHOOK_NBA_RESULTS=https://discord.com/api/webhooks/...
+# DISCORD_ENABLED=true
 ```
 
-### 3. Create the database and apply migrations
-
-```bash
-# Create DB (run once)
-sudo -u postgres psql -c "CREATE DATABASE betting_agent;"
-
-# Apply schema (creates games, odds, sentiment, picks tables)
-uv run alembic upgrade head
-```
-
-### 4. Train the models
+### 3. Train the models
 
 #### NFL
 
-Downloads schedule data via nflreadpy, builds a ~125-feature matrix, trains XGBoost models, and saves to `saved_models/NFL/`.
+Downloads schedule data via nflreadpy, builds a ~62-feature matrix, trains XGBoost models, and saves to `saved_models/NFL/`.
 
 ```bash
 uv run python scripts/train.py --sport NFL --seasons 2018 2019 2020 2021 2022 2023 2024
@@ -117,13 +122,13 @@ uv run python scripts/train.py --sport NFL --seasons 2018 2019 2020 2021 2022 20
 
 #### NBA
 
-Downloads schedule data via nba_api, builds a ~97-feature matrix (including back-to-back, conference, and division features), and saves to `saved_models/NBA/`.
+Downloads schedule data via nba_api, builds a ~91–97 feature matrix (including advanced stats like TS%, eFG%, ORTG/DRTG, pace, AST/TOV rates, back-to-back, conference, and division features), and saves to `saved_models/NBA/`.
 
 ```bash
 uv run python scripts/train.py --sport NBA --seasons 2022 2023 2024
 ```
 
-Training takes ~1–2 minutes per sport.
+Training takes ~1–2 minutes per sport. Add `--no-seed` to skip DB seeding if PostgreSQL is not running.
 
 Saved artifacts (per sport):
 
@@ -134,7 +139,8 @@ saved_models/<SPORT>/
 ├── home_regression.joblib   # home score regressor
 ├── away_regression.joblib   # away score regressor
 ├── feature_names.pkl        # feature alignment at predict time
-└── regression_scaler.joblib # score feature scaler
+├── scoring_sigma.pkl        # empirical regression residual std devs
+└── feature_importance.json  # gain-based feature importance per model
 ```
 
 ### 5. Generate today's picks
@@ -151,9 +157,23 @@ If Ollama is running, each matchup gets an LLM-powered analysis (injury context,
 
 ---
 
+## Database Setup (Optional)
+
+PostgreSQL is required for the daily extract/grade/CLV/ROI workflow and for saving picks with `--save`. If you only want to train models, generate picks, or run backtests, you can skip this.
+
+```bash
+# Create DB (run once)
+sudo -u postgres psql -c "CREATE DATABASE betting_agent;"
+
+# Apply schema (creates games, odds, sentiment, picks tables)
+uv run alembic upgrade head
+```
+
+---
+
 ## Daily Workflow
 
-All scripts accept `--sport NFL` or `--sport NBA` (default: NFL).
+Requires PostgreSQL. All scripts accept `--sport NFL` or `--sport NBA` (default: NFL).
 
 ### 1. Morning — fetch schedule + opening odds + weather
 
@@ -282,7 +302,7 @@ betting-agent/
 │   │   │   └── features.py # NFL feature assembly + normalisation
 │   │   └── nba/
 │   │       ├── loader.py   # nba_api wrapper (LeagueGameLog pivot, team mappings)
-│   │       └── features.py # NBA features (back-to-back, conference, division)
+│   │       └── features.py # NBA features (advanced stats, back-to-back, conference, division)
 │   ├── models/
 │   │   ├── classification.py  # XGBoost classifier + IsotonicRegression calibrator
 │   │   ├── regression.py      # Score regressors (home/away)
@@ -296,7 +316,7 @@ betting-agent/
 │       ├── grader.py     # Grade picks against results
 │       ├── clv.py        # Closing Line Value tracking
 │       └── roi.py        # ROI reporting
-├── tests/                # 54 unit tests (uv run pytest tests/ -v)
+├── tests/                # 114 unit tests (uv run pytest tests/ -v)
 ├── saved_models/         # Trained model artifacts (per sport)
 ├── .env.example          # Environment variable template
 ├── pyproject.toml        # Project metadata + dependencies

@@ -108,3 +108,44 @@ def load_regressors(
     home_model = joblib.load(save_dir / "home_regression.joblib")
     away_model = joblib.load(save_dir / "away_regression.joblib")
     return home_model, away_model
+
+
+def compute_residual_sigma(
+    home_model: xgb.XGBRegressor,
+    away_model: xgb.XGBRegressor,
+    X_test: pd.DataFrame,
+    y_home_test: pd.Series,
+    y_away_test: pd.Series,
+) -> dict[str, float]:
+    """Compute std dev of total and margin prediction residuals on held-out data."""
+    h_pred = home_model.predict(X_test)
+    a_pred = away_model.predict(X_test)
+
+    pred_total = h_pred + a_pred
+    actual_total = y_home_test.values + y_away_test.values
+    total_residuals = actual_total - pred_total
+
+    pred_margin = h_pred - a_pred
+    actual_margin = y_home_test.values - y_away_test.values
+    margin_residuals = actual_margin - pred_margin
+
+    return {
+        "total_sigma": float(np.std(total_residuals, ddof=1)),
+        "margin_sigma": float(np.std(margin_residuals, ddof=1)),
+    }
+
+
+def save_sigma(sigma_dict: dict[str, float], save_dir: Path) -> None:
+    """Save sigma to scoring_sigma.pkl."""
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(sigma_dict, save_dir / "scoring_sigma.pkl")
+    logger.info("Scoring sigma saved to %s: %s", save_dir / "scoring_sigma.pkl", sigma_dict)
+
+
+def load_sigma(save_dir: Path) -> dict[str, float] | None:
+    """Load sigma, returns None if file doesn't exist."""
+    path = Path(save_dir) / "scoring_sigma.pkl"
+    if path.exists():
+        return joblib.load(path)
+    return None

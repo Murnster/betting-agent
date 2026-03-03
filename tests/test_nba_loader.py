@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from betting_agent.sports.nba.loader import (
+    BOX_SCORE_COLS,
     NBALoader,
     int_to_nba_season,
     _parse_nba_date,
@@ -47,6 +48,8 @@ class TestSportKey:
 class TestPivotGameLog:
     def _make_game_log(self):
         """Create a mock LeagueGameLog DataFrame with 2 rows per game."""
+        box = {"FGM": 40, "FGA": 88, "FG3M": 12, "FTA": 20, "OREB": 10, "AST": 25, "TOV": 14}
+        box2 = {"FGM": 38, "FGA": 85, "FG3M": 10, "FTA": 18, "OREB": 8, "AST": 22, "TOV": 12}
         return pd.DataFrame([
             {
                 "GAME_ID": "0022400100",
@@ -54,6 +57,7 @@ class TestPivotGameLog:
                 "MATCHUP": "BOS vs. MIL",
                 "GAME_DATE": "OCT 28, 2024",
                 "PTS": 110,
+                **box,
             },
             {
                 "GAME_ID": "0022400100",
@@ -61,6 +65,7 @@ class TestPivotGameLog:
                 "MATCHUP": "MIL @ BOS",
                 "GAME_DATE": "OCT 28, 2024",
                 "PTS": 105,
+                **box2,
             },
             {
                 "GAME_ID": "0022400101",
@@ -68,6 +73,7 @@ class TestPivotGameLog:
                 "MATCHUP": "LAL vs. GSW",
                 "GAME_DATE": "OCT 29, 2024",
                 "PTS": 120,
+                **box,
             },
             {
                 "GAME_ID": "0022400101",
@@ -75,6 +81,7 @@ class TestPivotGameLog:
                 "MATCHUP": "GSW @ LAL",
                 "GAME_DATE": "OCT 29, 2024",
                 "PTS": 115,
+                **box2,
             },
         ])
 
@@ -119,6 +126,42 @@ class TestPivotGameLog:
         }])
         rows = _pivot_game_log(df, season=2024, is_playoff=False)
         assert len(rows) == 0
+
+    def test_pivot_preserves_box_score_columns(self):
+        """Box score columns should be carried through as home_/away_ prefixed."""
+        df = self._make_game_log()
+        rows = _pivot_game_log(df, season=2024, is_playoff=False)
+        game1 = rows[0]
+        assert game1["home_fgm"] == 40
+        assert game1["away_fgm"] == 38
+        assert game1["home_fg3m"] == 12
+        assert game1["away_oreb"] == 8
+        for col in BOX_SCORE_COLS:
+            assert f"home_{col.lower()}" in game1
+            assert f"away_{col.lower()}" in game1
+
+    def test_pivot_missing_box_cols_graceful(self):
+        """API data missing box cols → values should be None."""
+        df = pd.DataFrame([
+            {
+                "GAME_ID": "0022400100",
+                "TEAM_ABBREVIATION": "BOS",
+                "MATCHUP": "BOS vs. MIL",
+                "GAME_DATE": "OCT 28, 2024",
+                "PTS": 110,
+            },
+            {
+                "GAME_ID": "0022400100",
+                "TEAM_ABBREVIATION": "MIL",
+                "MATCHUP": "MIL @ BOS",
+                "GAME_DATE": "OCT 28, 2024",
+                "PTS": 105,
+            },
+        ])
+        rows = _pivot_game_log(df, season=2024, is_playoff=False)
+        assert len(rows) == 1
+        assert rows[0]["home_fgm"] is None
+        assert rows[0]["away_tov"] is None
 
 
 class TestTeamMappings:

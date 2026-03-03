@@ -56,7 +56,8 @@ def generate_picks(
     sport: str = "NFL",
     pick_date: date | None = None,
     sentiment_scores: dict[str, float] | None = None,
-    scoring_sigma: float = 14.0,
+    total_sigma: float = 14.0,
+    margin_sigma: float = 14.0,
 ) -> list[BetCandidate]:
     """
     Main pick generation pipeline.
@@ -151,7 +152,7 @@ def generate_picks(
         if spread_line is not None and spread_home_price:
             cover_prob, s_edge = calculate_spread_edge(
                 pred_margin, -spread_line, spread_home_price,
-                away_odds=spread_away_price, sigma=scoring_sigma,
+                away_odds=spread_away_price, sigma=margin_sigma,
             )
             s_edge += _sent_adj(home)
             if s_edge >= settings.min_edge_pct:
@@ -173,7 +174,7 @@ def generate_picks(
         under_price = best_odds.get("under_price")
 
         if total_line and over_price:
-            over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=under_price, sigma=scoring_sigma)
+            over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=under_price, sigma=total_sigma)
             o_edge += (_sent_adj(home) + _sent_adj(away)) / 2
             if o_edge >= settings.min_edge_pct:
                 implied = american_to_implied_prob(over_price)
@@ -189,7 +190,7 @@ def generate_picks(
                 ))
 
         if total_line and under_price:
-            under_prob, u_edge = calculate_total_edge(pred_total, total_line, under_price, "under", other_odds=over_price, sigma=scoring_sigma)
+            under_prob, u_edge = calculate_total_edge(pred_total, total_line, under_price, "under", other_odds=over_price, sigma=total_sigma)
             u_edge += (_sent_adj(home) + _sent_adj(away)) / 2
             if u_edge >= settings.min_edge_pct:
                 implied = american_to_implied_prob(under_price)

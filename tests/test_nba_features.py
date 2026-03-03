@@ -10,7 +10,9 @@ from betting_agent.sports.nba.features import (
     DIVISIONS,
     EASTERN_CONFERENCE,
     WESTERN_CONFERENCE,
+    _ADVANCED_STATS,
     build_nba_features,
+    compute_nba_advanced_rolling,
     normalise_nba_schedules,
     split_features_targets,
 )
@@ -43,6 +45,21 @@ def _make_synthetic_schedule(n_games: int = 50) -> pd.DataFrame:
             "neutral_site": False,
             "sport": "NBA",
             "status": "final",
+            # Box score columns
+            "home_fgm": 38 + i % 5,
+            "home_fga": 85 + i % 8,
+            "home_fg3m": 10 + i % 6,
+            "home_fta": 18 + i % 7,
+            "home_oreb": 8 + i % 5,
+            "home_ast": 22 + i % 6,
+            "home_tov": 12 + i % 4,
+            "away_fgm": 36 + i % 5,
+            "away_fga": 83 + i % 8,
+            "away_fg3m": 9 + i % 6,
+            "away_fta": 17 + i % 7,
+            "away_oreb": 7 + i % 5,
+            "away_ast": 20 + i % 6,
+            "away_tov": 13 + i % 4,
         })
     return pd.DataFrame(rows)
 
@@ -117,6 +134,82 @@ class TestBuildNbaFeatures:
         result = build_nba_features(df)
         assert "_is_upcoming" in result.columns
         assert result["_is_upcoming"].sum() == 3
+
+    def test_advanced_rolling_columns_in_output(self):
+        """Advanced rolling columns should be present, raw box cols dropped."""
+        df = _make_synthetic_schedule(50)
+        result = build_nba_features(df)
+        # At least some advanced rolling columns should exist
+        adv_cols = [c for c in result.columns if "ts_pct" in c or "ortg" in c]
+        assert len(adv_cols) > 0, "No advanced rolling columns found"
+        # Raw box score columns should be dropped
+        for col in ["home_fgm", "away_fga", "home_oreb", "away_tov"]:
+            assert col not in result.columns, f"Raw box col {col} should be dropped"
+
+
+class TestNbaAdvancedRolling:
+    def test_rolling_columns_created(self):
+        """All 54 columns (8 stats × 2 sides × 3 windows) should be created."""
+        df = _make_synthetic_schedule(50)
+        df = normalise_nba_schedules(df)
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        df = df.sort_values("game_date").reset_index(drop=True)
+        result = compute_nba_advanced_rolling(df, windows=[3, 5, 10])
+        expected_count = len(_ADVANCED_STATS) * 2 * 3  # 8 * 2 * 3 = 48
+        adv_cols = [
+            c for c in result.columns
+            if any(c.endswith(f"_{w}g") and any(s in c for s in _ADVANCED_STATS)
+                   for w in [3, 5, 10])
+        ]
+        assert len(adv_cols) == expected_count, (
+            f"Expected {expected_count} advanced columns, got {len(adv_cols)}: {adv_cols}"
+        )
+
+    def test_first_game_has_nan_rolling(self):
+        """First game for a team has no history → NaN rolling stats."""
+        df = _make_synthetic_schedule(50)
+        df = normalise_nba_schedules(df)
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        df = df.sort_values("game_date").reset_index(drop=True)
+        result = compute_nba_advanced_rolling(df, windows=[3, 5, 10])
+        assert pd.isna(result.at[0, "home_ts_pct_3g"])
+
+    def test_rolling_values_reasonable(self):
+        """TS% should be in [0, 1], ORTG in [50, 200] for reasonable data."""
+        df = _make_synthetic_schedule(50)
+        df = normalise_nba_schedules(df)
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        df = df.sort_values("game_date").reset_index(drop=True)
+        result = compute_nba_advanced_rolling(df, windows=[5])
+        ts = result["home_ts_pct_5g"].dropna()
+        assert (ts >= 0).all() and (ts <= 1).all(), "TS% out of [0, 1]"
+        ortg = result["home_ortg_5g"].dropna()
+        assert (ortg >= 50).all() and (ortg <= 200).all(), "ORTG out of [50, 200]"
+
+    def test_no_box_cols_returns_unchanged(self):
+        """If box score columns are absent, return df unchanged."""
+        df = _make_synthetic_schedule(10)
+        # Remove box score columns
+        box_cols = [c for c in df.columns if c.startswith(("home_fg", "away_fg",
+                    "home_fta", "away_fta", "home_oreb", "away_oreb",
+                    "home_ast", "away_ast", "home_tov", "away_tov"))]
+        df = df.drop(columns=box_cols)
+        original_cols = set(df.columns)
+        result = compute_nba_advanced_rolling(df, windows=[3, 5, 10])
+        assert set(result.columns) == original_cols
+
+    def test_division_by_zero_safe(self):
+        """FGA=0 shouldn't crash — should produce NaN for that game's stats."""
+        df = _make_synthetic_schedule(10)
+        df = normalise_nba_schedules(df)
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        df = df.sort_values("game_date").reset_index(drop=True)
+        # Set FGA=0 for first game
+        df.at[0, "home_fga"] = 0
+        df.at[0, "home_fgm"] = 0
+        # Should not raise
+        result = compute_nba_advanced_rolling(df, windows=[3])
+        assert result is not None
 
 
 class TestSplitFeaturesTargets:

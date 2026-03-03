@@ -71,6 +71,7 @@ def calculate_spread_edge(
     import math
     z = (predicted_margin - spread_line) / sigma
     cover_prob = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    cover_prob = max(0.10, min(0.90, cover_prob))
 
     other_odds = away_odds if away_odds is not None else american_odds
     home_imp = american_to_implied_prob(american_odds)
@@ -100,6 +101,7 @@ def calculate_total_edge(
     z = (predicted_total - total_line) / sigma
     over_prob = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
     cover_prob = over_prob if side == "over" else 1.0 - over_prob
+    cover_prob = max(0.10, min(0.90, cover_prob))
 
     opp_odds = other_odds if other_odds is not None else american_odds
     this_imp = american_to_implied_prob(american_odds)

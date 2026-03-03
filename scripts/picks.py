@@ -236,6 +236,11 @@ def main() -> None:
         logger.warning("Sentiment failed, continuing without: %s", exc)
 
     # ---- Generate picks ----
+    sigma = engine.get_sigma()
+    logger.info(
+        "Using sigma — total: %.2f, margin: %.2f",
+        sigma["total_sigma"], sigma["margin_sigma"],
+    )
     candidates = generate_picks(
         features=features,
         metadata=metadata,
@@ -245,7 +250,8 @@ def main() -> None:
         sport=sport,
         pick_date=date.today(),
         sentiment_scores=sentiment_scores,
-        scoring_sigma=config.scoring_sigma,
+        total_sigma=sigma["total_sigma"],
+        margin_sigma=sigma["margin_sigma"],
     )
 
     # ---- Attach analysis data to candidates for CLI display ----

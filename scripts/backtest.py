@@ -36,7 +36,12 @@ from betting_agent.intelligence.ev import (
 from betting_agent.intelligence.kelly import kelly_fraction, scaled_kelly
 from betting_agent.models.classification import train_calibrated_classifier, save_classifier
 from betting_agent.models.engine import PredictionEngine
-from betting_agent.models.regression import train_final_regressors, save_regressors
+from betting_agent.models.regression import (
+    train_final_regressors,
+    train_regressors,
+    save_regressors,
+    compute_residual_sigma,
+)
 from betting_agent.sports.registry import get_sport_config, available_sports
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -111,6 +116,7 @@ def _simulate_season(
     hist_avg_total: float,
     total_stdev: float,
     flat_stake: float | None = None,
+    total_sigma: float = 14.0,
 ) -> tuple[list[dict], float]:
     """
     Simulate one season. Returns (bet_log, final_bankroll).
@@ -200,13 +206,13 @@ def _simulate_season(
             side = "over"
             over_prob, o_edge = calculate_total_edge(
                 pred_total, ou_line, ou_home_odds, "over",
-                other_odds=ou_away_odds,
+                other_odds=ou_away_odds, sigma=total_sigma,
             )
         else:
             side = "under"
             over_prob, o_edge = calculate_total_edge(
                 pred_total, ou_line, ou_away_odds, "under",
-                other_odds=ou_home_odds,
+                other_odds=ou_home_odds, sigma=total_sigma,
             )
 
         ou_bet_odds = ou_home_odds if side == "over" else ou_away_odds
@@ -338,9 +344,21 @@ def main() -> None:
         feature_names = list(X_tr.columns)
 
         clf, calibrator = train_calibrated_classifier(X_tr, y_tr["home_team_wins"].astype(int), verbose=False)
-        home_reg, away_reg = train_final_regressors(
-            X_tr, y_tr["home_score"].astype(float), y_tr["away_score"].astype(float)
+        y_home_tr = y_tr["home_score"].astype(float)
+        y_away_tr = y_tr["away_score"].astype(float)
+        home_reg, away_reg = train_final_regressors(X_tr, y_home_tr, y_away_tr)
+
+        # Compute empirical sigma from regression residuals on this fold
+        sigma_split = int(len(X_tr) * 0.8)
+        X_sig_tr, X_sig_te = X_tr.iloc[:sigma_split], X_tr.iloc[sigma_split:]
+        yh_sig_tr, yh_sig_te = y_home_tr.iloc[:sigma_split], y_home_tr.iloc[sigma_split:]
+        ya_sig_tr, ya_sig_te = y_away_tr.iloc[:sigma_split], y_away_tr.iloc[sigma_split:]
+        h_sig_model, a_sig_model = train_regressors(
+            X_sig_tr, yh_sig_tr, ya_sig_tr, eval_split=0.2, verbose=False,
         )
+        fold_sigma = compute_residual_sigma(h_sig_model, a_sig_model, X_sig_te, yh_sig_te, ya_sig_te)
+        fold_total_sigma = fold_sigma["total_sigma"]
+        logger.info("  Fold sigma — total: %.2f, margin: %.2f", fold_sigma["total_sigma"], fold_sigma["margin_sigma"])
 
         # Compute historical total points for O/U line generation
         train_complete = train_raw[
@@ -379,6 +397,7 @@ def main() -> None:
             hist_avg_total=config.hist_avg_total,
             total_stdev=config.total_stdev,
             flat_stake=args.flat_stake,
+            total_sigma=fold_total_sigma,
         )
 
         for log in logs:

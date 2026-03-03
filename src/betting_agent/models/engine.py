@@ -15,7 +15,7 @@ import xgboost as xgb
 
 from betting_agent.config import settings
 from betting_agent.models.classification import load_classifier
-from betting_agent.models.regression import load_regressors
+from betting_agent.models.regression import load_regressors, load_sigma
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ class PredictionEngine:
         self._home_reg = None
         self._away_reg = None
         self._feature_names: list[str] | None = None
+        self._total_sigma: float | None = None
+        self._margin_sigma: float | None = None
         self._loaded = False
 
     def load(self) -> bool:
@@ -52,6 +54,15 @@ class PredictionEngine:
             if cal_path.exists():
                 self._calibrator = joblib.load(cal_path)
                 logger.info("Calibrator loaded from %s", cal_path)
+
+            sigma_dict = load_sigma(d)
+            if sigma_dict is not None:
+                self._total_sigma = sigma_dict.get("total_sigma")
+                self._margin_sigma = sigma_dict.get("margin_sigma")
+                logger.info(
+                    "Scoring sigma loaded: total=%.2f, margin=%.2f",
+                    self._total_sigma, self._margin_sigma,
+                )
 
             self._loaded = True
             logger.info("PredictionEngine loaded for %s from %s", self.sport, d)
@@ -107,3 +118,10 @@ class PredictionEngine:
             },
             index=X.index,
         )
+
+    def get_sigma(self) -> dict[str, float]:
+        """Return empirical sigma values, falling back to 14.0 if not available."""
+        return {
+            "total_sigma": self._total_sigma if self._total_sigma is not None else 14.0,
+            "margin_sigma": self._margin_sigma if self._margin_sigma is not None else 14.0,
+        }

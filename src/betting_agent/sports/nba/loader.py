@@ -20,6 +20,11 @@ from betting_agent.sports.base import SportLoader
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Box score columns preserved from nba_api LeagueGameLog
+# ---------------------------------------------------------------------------
+BOX_SCORE_COLS = ["FGM", "FGA", "FG3M", "FTA", "OREB", "AST", "TOV"]
+
+# ---------------------------------------------------------------------------
 # Team name mappings: nba_api abbreviation ↔ Odds API full name
 # ---------------------------------------------------------------------------
 NBA_ABBREV_TO_FULL: dict[str, str] = {
@@ -117,7 +122,7 @@ def _pivot_game_log(df, season: int, is_playoff: bool) -> list[dict]:
         # Determine status
         status = "final" if home_score is not None and away_score is not None else "scheduled"
 
-        rows.append({
+        row_dict = {
             "external_id": str(game_id),
             "game_date": game_date,
             "season": season,
@@ -130,7 +135,14 @@ def _pivot_game_log(df, season: int, is_playoff: bool) -> list[dict]:
             "neutral_site": False,
             "sport": "NBA",
             "status": status,
-        })
+        }
+
+        # Preserve box score columns when available
+        for col in BOX_SCORE_COLS:
+            row_dict[f"home_{col.lower()}"] = home_row.get(col)
+            row_dict[f"away_{col.lower()}"] = away_row.get(col)
+
+        rows.append(row_dict)
 
     return rows
 

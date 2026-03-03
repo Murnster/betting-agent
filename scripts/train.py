@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -20,10 +21,54 @@ import xgboost as xgb
 from betting_agent.config import settings
 from betting_agent.sports.registry import get_sport_config, available_sports
 from betting_agent.models.classification import train_calibrated_classifier, save_classifier
-from betting_agent.models.regression import train_final_regressors, save_regressors
+from betting_agent.models.regression import (
+    train_final_regressors,
+    train_regressors,
+    save_regressors,
+    compute_residual_sigma,
+    save_sigma,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _extract_and_save_importance(
+    clf: xgb.Booster,
+    home_reg,
+    away_reg,
+    feature_names: list[str],
+    save_dir: Path,
+) -> None:
+    """Extract feature importance from all models and save to JSON."""
+    result: dict[str, list[dict[str, object]]] = {}
+
+    # Classifier (xgb.Booster) — gain-based importance
+    clf_scores = clf.get_score(importance_type="gain")
+    clf_sorted = sorted(clf_scores.items(), key=lambda x: x[1], reverse=True)
+    result["classifier"] = [{"feature": f, "gain": round(g, 2)} for f, g in clf_sorted]
+
+    # Regressors (XGBRegressor) — feature_importances_ (gain-normalized)
+    for name, reg in [("home_regressor", home_reg), ("away_regressor", away_reg)]:
+        importances = reg.feature_importances_
+        pairs = sorted(
+            zip(feature_names, importances.tolist()),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        result[name] = [{"feature": f, "importance": round(v, 6)} for f, v in pairs if v > 0]
+
+    # Log top 20 per model
+    for model_name, entries in result.items():
+        logger.info("Top 20 features — %s:", model_name)
+        for entry in entries[:20]:
+            val = entry.get("gain", entry.get("importance", 0))
+            logger.info("  %-40s  %.4f", entry["feature"], val)
+
+    out_path = save_dir / "feature_importance.json"
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    logger.info("Feature importance saved to %s", out_path)
 
 
 def main() -> None:
@@ -116,6 +161,31 @@ def main() -> None:
     logger.info("Training regression models...")
     home_reg, away_reg = train_final_regressors(X, y_home, y_away)
     save_regressors(home_reg, away_reg, save_dir)
+
+    # ---- 4b. Compute empirical sigma from regression residuals ----
+    logger.info("Computing empirical scoring sigma...")
+    sigma_split = int(len(X) * 0.8)
+    X_sigma_tr, X_sigma_te = X.iloc[:sigma_split], X.iloc[sigma_split:]
+    yh_sigma_tr, yh_sigma_te = y_home.iloc[:sigma_split], y_home.iloc[sigma_split:]
+    ya_sigma_tr, ya_sigma_te = y_away.iloc[:sigma_split], y_away.iloc[sigma_split:]
+
+    home_sigma_model, away_sigma_model = train_regressors(
+        X_sigma_tr, yh_sigma_tr, ya_sigma_tr, eval_split=0.2, verbose=False,
+    )
+    sigma_dict = compute_residual_sigma(
+        home_sigma_model, away_sigma_model, X_sigma_te, yh_sigma_te, ya_sigma_te,
+    )
+    save_sigma(sigma_dict, save_dir)
+    logger.info(
+        "Empirical sigma — total: %.2f (default: %.1f), margin: %.2f",
+        sigma_dict["total_sigma"],
+        config.scoring_sigma,
+        sigma_dict["margin_sigma"],
+    )
+
+    # ---- 5. Feature importance analysis ----
+    logger.info("Extracting feature importance...")
+    _extract_and_save_importance(clf, home_reg, away_reg, feature_names, save_dir)
 
     logger.info("Training complete. Models saved to %s", save_dir)
     logger.info(
