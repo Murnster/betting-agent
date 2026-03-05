@@ -261,7 +261,7 @@ def main() -> None:
             c.extra["analysis"] = game_analyses[key]
 
     # ---- Output ----
-    print(format_picks_cli(candidates, args.bankroll))
+    print(format_picks_cli(candidates, args.bankroll, sport=sport))
 
     if args.save and candidates:
         try:

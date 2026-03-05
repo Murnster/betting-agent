@@ -38,3 +38,8 @@ CLAUDE.MD
 GEMINI.MD
 .gemini
 
+# Logs
+logs/
+logs/*
+
+

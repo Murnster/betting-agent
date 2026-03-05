@@ -34,6 +34,8 @@ MAX_EMBEDS_PER_MESSAGE = 10
 
 WEBHOOK_TIMEOUT = 10  # seconds
 
+SPORT_EMOJI = {"NFL": "\U0001f3c8", "NBA": "\U0001f3c0", "NHL": "\U0001f3d2"}
+
 
 def _get_webhook_url(sport: str, channel_type: str) -> str | None:
     """
@@ -79,27 +81,27 @@ def _send_webhook(url: str, payload: dict) -> bool:
     return False
 
 
-def _build_pick_embed(pick: BetCandidate, rank: int) -> dict:
+def _build_pick_embed(
+    pick: BetCandidate,
+    rank: int,
+    star_thresholds: tuple[float, float, float, float] = (0.04, 0.07, 0.12, 0.20),
+) -> dict:
     """Build a Discord embed dict for a single pick."""
     label = _pick_label(pick)
-    stars = _confidence_stars(pick.edge)
+    stars = _confidence_stars(pick.edge, star_thresholds)
     matchup = f"{pick.away_team} @ {pick.home_team}"
 
-    fields = [
-        {"name": "Odds", "value": f"`{pick.odds:+d}`", "inline": True},
-        {"name": "Edge", "value": f"`{pick.edge:+.1%}`", "inline": True},
-        {"name": "Confidence", "value": stars, "inline": True},
-        {"name": "Model Prob", "value": f"`{pick.model_prob:.1%}`", "inline": True},
-        {"name": "Implied Prob", "value": f"`{pick.implied_prob:.1%}`", "inline": True},
-        {"name": "Kelly", "value": f"`{pick.kelly_fraction:.2%}`", "inline": True},
-        {"name": "Bet Size", "value": f"`${pick.recommended_bet:.2f}`", "inline": True},
-    ]
+    desc = (
+        f"{matchup}\n\n"
+        f"**Odds:** `{pick.odds:+d}`  |  **Edge:** `{pick.edge:+.1%}`  |  {stars}\n"
+        f"**Model:** `{pick.model_prob:.1%}`  vs  **Market:** `{pick.implied_prob:.1%}`\n"
+        f"**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}`"
+    )
 
     return {
         "title": f"#{rank}  {label}",
-        "description": matchup,
+        "description": desc,
         "color": COLOR_GREEN,
-        "fields": fields,
     }
 
 
@@ -110,20 +112,19 @@ def _build_summary_embed(
     total_action = sum(c.recommended_bet for c in candidates)
     pct_bankroll = (total_action / bankroll * 100) if bankroll > 0 else 0
     pick_date = candidates[0].game_date if candidates else date.today()
+    emoji = SPORT_EMOJI.get(sport.upper(), "")
+
+    desc = (
+        f"{pick_date}\n\n"
+        f"**Bankroll:** ${bankroll:,.2f}  |  "
+        f"**{len(candidates)} Picks**  |  "
+        f"**Action:** ${total_action:.2f} ({pct_bankroll:.1f}%)"
+    )
 
     return {
-        "title": f"Picks of the Day — {sport}",
-        "description": str(pick_date),
+        "title": f"{emoji} Picks of the Day \u2014 {sport}",
+        "description": desc,
         "color": COLOR_BLUE,
-        "fields": [
-            {"name": "Bankroll", "value": f"`${bankroll:,.2f}`", "inline": True},
-            {"name": "Picks", "value": f"`{len(candidates)}`", "inline": True},
-            {
-                "name": "Total Action",
-                "value": f"`${total_action:.2f} ({pct_bankroll:.1f}%)`",
-                "inline": True,
-            },
-        ],
     }
 
 
@@ -148,10 +149,13 @@ def send_picks_to_discord(
         return True
 
     # Build all embeds: summary header + one per pick
+    from betting_agent.sports.registry import get_sport_config
+    star_thresholds = get_sport_config(sport).star_thresholds
+
     embeds = [_build_summary_embed(candidates, bankroll, sport)]
     ranked = sorted(candidates, key=lambda c: c.edge, reverse=True)
     for rank, pick in enumerate(ranked, 1):
-        embeds.append(_build_pick_embed(pick, rank))
+        embeds.append(_build_pick_embed(pick, rank, star_thresholds))
 
     # Split into chunks of MAX_EMBEDS_PER_MESSAGE
     all_ok = True
@@ -170,7 +174,7 @@ def _build_results_embed(
     """Build a Discord embed for grading results."""
     if "message" in summary:
         return {
-            "title": f"Results — {sport}",
+            "title": f"Results \u2014 {sport}",
             "description": summary["message"],
             "color": COLOR_GREY,
         }
@@ -186,27 +190,26 @@ def _build_results_embed(
     wins = summary.get("wins", 0)
     losses = summary.get("losses", 0)
     pushes = summary.get("pushes", 0)
+    win_rate = summary.get("win_rate_pct", 0)
+    roi = summary.get("roi_pct", 0)
+    avg_edge = summary.get("avg_edge_pct", 0)
 
-    fields = [
-        {"name": "Record", "value": f"`{wins}-{losses}-{pushes}`", "inline": True},
-        {"name": "Win Rate", "value": f"`{summary.get('win_rate_pct', 0):.1f}%`", "inline": True},
-        {"name": "P&L", "value": f"`${pnl:+,.2f}`", "inline": True},
-        {"name": "ROI", "value": f"`{summary.get('roi_pct', 0):+.2f}%`", "inline": True},
-        {"name": "Avg Edge", "value": f"`{summary.get('avg_edge_pct', 0):+.2f}%`", "inline": True},
+    lines = [
+        f"**Record:** {wins}-{losses}-{pushes} ({win_rate:.1f}%)  |  "
+        f"**P&L:** {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}  |  **ROI:** {roi:+.2f}%",
+        f"**Avg Edge:** {avg_edge:+.2f}%",
     ]
 
     if summary.get("avg_clv_pct") is not None:
-        fields.append(
-            {"name": "Avg CLV", "value": f"`{summary['avg_clv_pct']:+.2f}%`", "inline": True}
-        )
+        lines[-1] += f"  |  **Avg CLV:** {summary['avg_clv_pct']:+.2f}%"
 
-    desc = str(graded_date) if graded_date else ""
+    date_str = str(graded_date) if graded_date else ""
+    desc = f"{date_str}\n\n" + "\n".join(lines) if date_str else "\n".join(lines)
 
     return {
-        "title": f"Results — {sport}",
+        "title": f"Results \u2014 {sport}",
         "description": desc,
         "color": color,
-        "fields": fields,
     }
 
 
@@ -279,29 +282,27 @@ def _build_alltime_sport_embed(
     wins = summary.get("wins", 0)
     losses = summary.get("losses", 0)
     pushes = summary.get("pushes", 0)
+    win_rate = summary.get("win_rate_pct", 0)
+    roi = summary.get("roi_pct", 0)
 
-    fields = [
-        {"name": "Record", "value": f"`{wins}-{losses}-{pushes}`", "inline": True},
-        {"name": "Win Rate", "value": f"`{summary.get('win_rate_pct', 0):.1f}%`", "inline": True},
-        {"name": "ROI", "value": f"`{summary.get('roi_pct', 0):+.2f}%`", "inline": True},
-        {"name": "Starting Bankroll", "value": f"`${starting_bankroll:,.2f}`", "inline": True},
-        {"name": "Current Bankroll", "value": f"`${current_bankroll:,.2f}`", "inline": True},
-        {"name": "All-Time P&L", "value": f"`${pnl:+,.2f}`", "inline": True},
+    lines = [
+        f"**Record:** {wins}-{losses}-{pushes} ({win_rate:.1f}%)  |  **ROI:** {roi:+.2f}%",
+        f"**Bankroll:** ${starting_bankroll:,.2f} \u2192 ${current_bankroll:,.2f}  |  "
+        f"**P&L:** {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}",
     ]
 
+    extra_parts = []
     if summary.get("avg_edge_pct") is not None:
-        fields.append(
-            {"name": "Avg Edge", "value": f"`{summary['avg_edge_pct']:+.2f}%`", "inline": True}
-        )
+        extra_parts.append(f"**Avg Edge:** {summary['avg_edge_pct']:+.2f}%")
     if summary.get("avg_clv_pct") is not None:
-        fields.append(
-            {"name": "Avg CLV", "value": f"`{summary['avg_clv_pct']:+.2f}%`", "inline": True}
-        )
+        extra_parts.append(f"**Avg CLV:** {summary['avg_clv_pct']:+.2f}%")
+    if extra_parts:
+        lines.append("  |  ".join(extra_parts))
 
     return {
         "title": sport,
+        "description": "\n".join(lines),
         "color": color,
-        "fields": fields,
     }
 
 

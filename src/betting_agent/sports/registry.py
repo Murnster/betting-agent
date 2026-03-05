@@ -28,6 +28,8 @@ class SportConfig:
     hist_avg_total: float  # for backtest O/U line generation
     total_stdev: float
     scoring_sigma: float = 14.0  # scoring variance for spread/total normal approx
+    star_thresholds: tuple[float, float, float, float] = (0.04, 0.07, 0.12, 0.20)
+    # (2-star, 3-star, 4-star, 5-star edge minimums)
 
 
 def _get_registry() -> dict[str, SportConfig]:
@@ -66,6 +68,7 @@ def _get_registry() -> dict[str, SportConfig]:
             hist_avg_total=220.0,
             total_stdev=15.0,
             scoring_sigma=11.5,
+            star_thresholds=(0.08, 0.15, 0.25, 0.35),
         ),
     }
 

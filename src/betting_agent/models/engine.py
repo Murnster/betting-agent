@@ -120,8 +120,10 @@ class PredictionEngine:
         )
 
     def get_sigma(self) -> dict[str, float]:
-        """Return empirical sigma values, falling back to 14.0 if not available."""
+        """Return empirical sigma values, falling back to sport-specific defaults."""
+        from betting_agent.sports.registry import get_sport_config
+        fallback = get_sport_config(self.sport).scoring_sigma
         return {
-            "total_sigma": self._total_sigma if self._total_sigma is not None else 14.0,
-            "margin_sigma": self._margin_sigma if self._margin_sigma is not None else 14.0,
+            "total_sigma": self._total_sigma if self._total_sigma is not None else fallback,
+            "margin_sigma": self._margin_sigma if self._margin_sigma is not None else fallback,
         }

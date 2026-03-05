@@ -103,13 +103,14 @@ def main() -> None:
     # ---- 1. Load raw schedules ----
     logger.info("Loading %s schedules for seasons: %s", sport, seasons)
     loader = config.loader_cls()
-    raw = loader.load_schedules(seasons).to_pandas()
+    raw_pl = loader.load_schedules(seasons)
+    raw = raw_pl.to_pandas()
     logger.info("Raw schedules: %d rows", len(raw))
 
     # Optionally seed DB
     if not args.no_seed:
         try:
-            n = loader.seed_games_table(seasons)
+            n = loader.seed_games_table(seasons, df=raw_pl)
             logger.info("DB seeded: %d new games", n)
         except Exception as exc:
             logger.warning("DB seed failed (DB may not be running): %s", exc)

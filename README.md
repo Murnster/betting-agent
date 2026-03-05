@@ -169,6 +169,21 @@ sudo -u postgres psql -c "CREATE DATABASE betting_agent;"
 uv run alembic upgrade head
 ```
 
+### Resetting the Database
+
+If you suspect bad data in the DB (e.g., from a corrupted seed or stale scores), you can wipe all tables and start fresh:
+
+```bash
+# Drop all tables and re-apply the schema
+uv run alembic downgrade base && uv run alembic upgrade head
+```
+
+This deletes **all** games, odds, sentiment, and picks data. To re-populate:
+
+- **Re-seed game schedules:** run `train.py` without `--no-seed` (seeding happens automatically)
+- **Re-fetch odds/weather:** run `extract.py morning --sport NBA` (and/or NFL)
+- **Saved picks and grading history cannot be recovered** — only reset if you're sure
+
 ---
 
 ## Daily Workflow

@@ -201,12 +201,13 @@ class NBALoader(SportLoader):
         logger.info("NBA injury data not available via nba_api")
         return pl.DataFrame()
 
-    def seed_games_table(self, seasons: list[int]) -> int:
+    def seed_games_table(self, seasons: list[int], df: pl.DataFrame | None = None) -> int:
         """
         Load schedules and upsert into the games table.
         Returns the number of rows inserted/updated.
         """
-        df = self.load_schedules(seasons)
+        if df is None:
+            df = self.load_schedules(seasons)
         count = 0
 
         with get_session() as session:

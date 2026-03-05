@@ -92,24 +92,25 @@ def test_build_pick_embed_structure():
     assert embed["title"].startswith("#1")
     assert "BUF @ KC" in embed["description"]
     assert embed["color"] == COLOR_GREEN
-    assert len(embed["fields"]) == 7
-
-    field_names = {f["name"] for f in embed["fields"]}
-    assert "Odds" in field_names
-    assert "Edge" in field_names
-    assert "Bet Size" in field_names
+    # Compact inline format: all info in description, no fields
+    assert "fields" not in embed
+    assert "Odds:" in embed["description"]
+    assert "Edge:" in embed["description"]
+    assert "Bet:" in embed["description"]
 
 
 def test_build_summary_embed():
     candidates = [_make_candidate(recommended_bet=30.0), _make_candidate(recommended_bet=20.0)]
     embed = _build_summary_embed(candidates, bankroll=1000.0, sport="NFL")
 
-    assert embed["title"] == "Picks of the Day — NFL"
+    assert "Picks of the Day" in embed["title"]
+    assert "NFL" in embed["title"]
     assert embed["color"] == COLOR_BLUE
-    assert len(embed["fields"]) == 3
-    # Total action should include both picks
-    action_field = next(f for f in embed["fields"] if f["name"] == "Total Action")
-    assert "$50.00" in action_field["value"]
+    # Compact inline format: all info in description, no fields
+    assert "fields" not in embed
+    assert "$50.00" in embed["description"]
+    assert "2 Picks" in embed["description"]
+    assert "$1,000.00" in embed["description"]
 
 
 def test_build_results_embed_positive_pnl():
@@ -126,8 +127,8 @@ def test_build_results_embed_positive_pnl():
     embed = _build_results_embed(summary, "NFL", graded_date=date(2026, 1, 14))
 
     assert embed["color"] == COLOR_GREEN
-    assert "3-2-0" in embed["fields"][0]["value"]
-    assert embed["description"] == "2026-01-14"
+    assert "3-2-0" in embed["description"]
+    assert "2026-01-14" in embed["description"]
 
 
 def test_build_results_embed_negative_pnl():
@@ -165,8 +166,8 @@ def test_build_results_embed_with_clv():
         "avg_clv_pct": 1.5,
     }
     embed = _build_results_embed(summary, "NFL")
-    field_names = {f["name"] for f in embed["fields"]}
-    assert "Avg CLV" in field_names
+    assert "Avg CLV" in embed["description"]
+    assert "+1.50%" in embed["description"]
 
 
 def test_build_breakdown_embed():
@@ -334,15 +335,12 @@ def test_build_alltime_sport_embed_positive_pnl():
     assert embed["title"] == "NFL"
     assert embed["color"] == COLOR_GREEN
 
-    field_names = {f["name"] for f in embed["fields"]}
-    assert "Starting Bankroll" in field_names
-    assert "Current Bankroll" in field_names
-    assert "All-Time P&L" in field_names
-    assert "Record" in field_names
-
-    # Current bankroll = 1000 + 245.50
-    current_field = next(f for f in embed["fields"] if f["name"] == "Current Bankroll")
-    assert "$1,245.50" in current_field["value"]
+    desc = embed["description"]
+    assert "30-18-2" in desc
+    assert "$1,000.00" in desc
+    assert "$1,245.50" in desc
+    assert "+$245.50" in desc
+    assert "Record" in desc
 
 
 def test_build_alltime_sport_embed_negative_pnl():
@@ -359,8 +357,7 @@ def test_build_alltime_sport_embed_negative_pnl():
     embed = _build_alltime_sport_embed(summary, "NBA", starting_bankroll=1000.0)
 
     assert embed["color"] == COLOR_RED
-    current_field = next(f for f in embed["fields"] if f["name"] == "Current Bankroll")
-    assert "$850.00" in current_field["value"]
+    assert "$850.00" in embed["description"]
 
 
 def test_build_alltime_sport_embed_no_data():
@@ -384,8 +381,8 @@ def test_build_alltime_sport_embed_with_clv():
         "avg_clv_pct": 1.2,
     }
     embed = _build_alltime_sport_embed(summary, "NFL", starting_bankroll=1000.0)
-    field_names = {f["name"] for f in embed["fields"]}
-    assert "Avg CLV" in field_names
+    assert "Avg CLV" in embed["description"]
+    assert "+1.20%" in embed["description"]
 
 
 @patch("betting_agent.notifications.discord._send_webhook")

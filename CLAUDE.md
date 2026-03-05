@@ -17,6 +17,10 @@ uv run alembic upgrade head             # requires PostgreSQL running
 uv run python scripts/train.py --sport NFL --seasons 2018 2019 2020 2021 2022 2023 2024
 uv run python scripts/train.py --sport NBA --seasons 2022 2023 2024
 
+# Reset DB from scratch (wipes all games, odds, sentiment, picks)
+uv run alembic downgrade base && uv run alembic upgrade head
+# Then re-seed by training without --no-seed, or run extract.py
+
 # Picks
 uv run python scripts/picks.py --sport NFL --bankroll 1000
 uv run python scripts/picks.py --sport NBA --bankroll 1000 --save

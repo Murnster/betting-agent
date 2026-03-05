@@ -45,6 +45,7 @@ class BetCandidate:
     recommended_bet: float = 0.0
     bankroll_at_pick: float = 0.0
     extra: dict = field(default_factory=dict)  # spread_line, total_line, etc.
+    external_id: str | None = None  # Odds API game ID for DB upsert
 
 
 def generate_picks(
@@ -85,6 +86,7 @@ def generate_picks(
             game_id = int(raw_game_id)
         except (TypeError, ValueError):
             game_id = 0
+        external_id = str(meta.get("external_id", "")) or None
         home = str(meta.get("home_team", ""))
         away = str(meta.get("away_team", ""))
 
@@ -123,7 +125,7 @@ def generate_picks(
                     bet_type="moneyline", pick_side=home,
                     model_prob=win_prob, implied_prob=implied, edge=edge,
                     odds=ml_home, kelly_fraction=kf, recommended_bet=bet,
-                    bankroll_at_pick=bankroll,
+                    bankroll_at_pick=bankroll, external_id=external_id,
                 ))
 
         away_win_prob = 1.0 - win_prob
@@ -142,7 +144,7 @@ def generate_picks(
                     bet_type="moneyline", pick_side=away,
                     model_prob=away_win_prob, implied_prob=implied, edge=edge,
                     odds=ml_away, kelly_fraction=kf, recommended_bet=bet,
-                    bankroll_at_pick=bankroll,
+                    bankroll_at_pick=bankroll, external_id=external_id,
                 ))
 
         # ---- Spread ----
@@ -164,7 +166,7 @@ def generate_picks(
                     bet_type="spread", pick_side=f"{home} {spread_line:+.1f}",
                     model_prob=cover_prob, implied_prob=implied, edge=s_edge,
                     odds=spread_home_price, kelly_fraction=kf, recommended_bet=bet,
-                    bankroll_at_pick=bankroll,
+                    bankroll_at_pick=bankroll, external_id=external_id,
                     extra={"spread_line": spread_line},
                 ))
 
@@ -185,7 +187,7 @@ def generate_picks(
                     bet_type="total", pick_side=f"over {total_line}",
                     model_prob=over_prob, implied_prob=implied, edge=o_edge,
                     odds=over_price, kelly_fraction=kf, recommended_bet=bet,
-                    bankroll_at_pick=bankroll,
+                    bankroll_at_pick=bankroll, external_id=external_id,
                     extra={"total_line": total_line},
                 ))
 
@@ -201,7 +203,7 @@ def generate_picks(
                     bet_type="total", pick_side=f"under {total_line}",
                     model_prob=under_prob, implied_prob=implied, edge=u_edge,
                     odds=under_price, kelly_fraction=kf, recommended_bet=bet,
-                    bankroll_at_pick=bankroll,
+                    bankroll_at_pick=bankroll, external_id=external_id,
                     extra={"total_line": total_line},
                 ))
 
@@ -237,18 +239,60 @@ def _find_best_odds(odds_data: list[dict], home_team: str) -> dict:
     return client.get_best_odds(odds_data, home_team)
 
 
+def _resolve_game_id(session, candidate: BetCandidate) -> int:
+    """Ensure a Game row exists for this candidate and return its DB id."""
+    from betting_agent.db.queries import upsert_game, get_game_by_external_id
+
+    # If the candidate already has a valid game_id (from historical data), use it
+    if candidate.game_id and candidate.game_id != 0:
+        existing = session.query(Game).get(candidate.game_id)
+        if existing:
+            return candidate.game_id
+
+    # Look up or create by external_id (Odds API game ID)
+    if candidate.external_id:
+        existing = get_game_by_external_id(session, candidate.external_id)
+        if existing:
+            return existing.id
+
+        game = upsert_game(session, {
+            "external_id": candidate.external_id,
+            "sport": candidate.sport,
+            "season": candidate.game_date.year,
+            "game_date": candidate.game_date,
+            "home_team": candidate.home_team,
+            "away_team": candidate.away_team,
+            "status": "scheduled",
+        })
+        return game.id
+
+    raise ValueError(
+        f"Cannot resolve game_id for {candidate.away_team}@{candidate.home_team}: "
+        "no valid game_id or external_id"
+    )
+
+
 def save_picks_to_db(candidates: list[BetCandidate]) -> None:
     """
     Persist POTD candidates to the picks table.
+    Ensures Game rows exist (via external_id upsert) before inserting picks.
     Prevents duplicates by checking if (game_id, bet_type, pick_date) already exists.
     """
     if not candidates:
         return
 
     with get_session() as session:
+        # Resolve real DB game IDs for all candidates
+        resolved_ids: dict[int, int] = {}  # index → db game_id
+        for i, c in enumerate(candidates):
+            try:
+                resolved_ids[i] = _resolve_game_id(session, c)
+            except ValueError as exc:
+                logger.warning("Skipping pick: %s", exc)
+
         # Pre-fetch existing picks for these games/date to minimize queries
-        game_ids = {c.game_id for c in candidates}
-        pick_date = candidates[0].game_date  # Assuming all candidates share the date
+        game_ids = set(resolved_ids.values())
+        pick_date = candidates[0].game_date
 
         existing_rows = (
             session.query(Pick)
@@ -258,21 +302,23 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
             )
             .all()
         )
-        
+
         # Create set of (game_id, bet_type) that already exist
         existing_keys = {(r.game_id, r.bet_type) for r in existing_rows}
 
         added = 0
         skipped = 0
-        for c in candidates:
-            # If we already have a pick for this game + bet type (e.g. spread), skip it.
-            # This prevents double-betting if the script re-runs or line moves slightly.
-            if (c.game_id, c.bet_type) in existing_keys:
+        for i, c in enumerate(candidates):
+            if i not in resolved_ids:
+                continue
+            db_game_id = resolved_ids[i]
+
+            if (db_game_id, c.bet_type) in existing_keys:
                 skipped += 1
                 continue
 
             pick = Pick(
-                game_id=c.game_id,
+                game_id=db_game_id,
                 sport=c.sport,
                 pick_date=c.game_date,
                 bet_type=c.bet_type,
@@ -286,8 +332,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 bankroll_at_pick=c.bankroll_at_pick,
             )
             session.add(pick)
-            # Add to local set so we don't try to add duplicates within the same batch
-            existing_keys.add((c.game_id, c.bet_type))
+            existing_keys.add((db_game_id, c.bet_type))
             added += 1
 
     if added > 0 or skipped > 0:
@@ -304,23 +349,34 @@ def _pick_label(pick: BetCandidate) -> str:
     return f"{pick.pick_side} Moneyline"
 
 
-def _confidence_stars(edge: float) -> str:
-    """Return 1-5 star rating based on edge magnitude."""
-    if edge >= 0.20:
+def _confidence_stars(
+    edge: float,
+    thresholds: tuple[float, float, float, float] = (0.04, 0.07, 0.12, 0.20),
+) -> str:
+    """Return 1-5 star rating based on edge magnitude and sport-specific thresholds."""
+    t2, t3, t4, t5 = thresholds
+    if edge >= t5:
         return "\u2605\u2605\u2605\u2605\u2605"
-    if edge >= 0.12:
+    if edge >= t4:
         return "\u2605\u2605\u2605\u2605\u2606"
-    if edge >= 0.07:
+    if edge >= t3:
         return "\u2605\u2605\u2605\u2606\u2606"
-    if edge >= 0.04:
+    if edge >= t2:
         return "\u2605\u2605\u2606\u2606\u2606"
     return "\u2605\u2606\u2606\u2606\u2606"
 
 
-def format_picks_cli(candidates: list[BetCandidate], bankroll: float) -> str:
+def format_picks_cli(
+    candidates: list[BetCandidate],
+    bankroll: float,
+    sport: str = "NFL",
+) -> str:
     """Format picks for terminal output in card-style ranked by confidence."""
     if not candidates:
         return "\nNo +EV picks found for today.\n"
+
+    from betting_agent.sports.registry import get_sport_config
+    star_thresholds = get_sport_config(sport).star_thresholds
 
     # Sort by edge descending (best pick first)
     ranked = sorted(candidates, key=lambda c: c.edge, reverse=True)
@@ -345,7 +401,7 @@ def format_picks_cli(candidates: list[BetCandidate], bankroll: float) -> str:
     for rank, pick in enumerate(ranked, 1):
         matchup = f"{pick.away_team} @ {pick.home_team}"
         label = _pick_label(pick)
-        stars = _confidence_stars(pick.edge)
+        stars = _confidence_stars(pick.edge, star_thresholds)
 
         def _card_row(left: str, right: str) -> str:
             padding = W - len(left) - len(right)
