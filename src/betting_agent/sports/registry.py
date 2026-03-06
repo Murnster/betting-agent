@@ -55,6 +55,13 @@ def _get_registry() -> dict[str, SportConfig]:
         split_features_targets as nhl_split,
     )
 
+    # MLB
+    from betting_agent.sports.mlb.loader import MLBLoader
+    from betting_agent.sports.mlb.features import (
+        build_mlb_features,
+        split_features_targets as mlb_split,
+    )
+
     return {
         "NFL": SportConfig(
             loader_cls=NFLLoader,
@@ -86,6 +93,17 @@ def _get_registry() -> dict[str, SportConfig]:
             hist_avg_total=6.0,
             total_stdev=1.5,
             scoring_sigma=1.5,
+            star_thresholds=(0.04, 0.07, 0.12, 0.20),
+        ),
+        "MLB": SportConfig(
+            loader_cls=MLBLoader,
+            build_features=build_mlb_features,
+            split_features_targets=mlb_split,
+            sport_key="baseball_mlb",
+            default_seasons=list(range(2021, 2026)),
+            hist_avg_total=8.5,
+            total_stdev=2.5,
+            scoring_sigma=2.5,
             star_thresholds=(0.04, 0.07, 0.12, 0.20),
         ),
     }

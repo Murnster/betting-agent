@@ -99,6 +99,33 @@ def test_build_pick_embed_structure():
     assert "Bet:" in embed["description"]
 
 
+def test_build_pick_embed_with_key_factors():
+    pick = _make_candidate(edge=0.08, odds=-110)
+    analysis = {
+        "key_factors": [
+            "Elite pass rush vs weak O-line",
+            "Home field advantage",
+        ]
+    }
+    embed = _build_pick_embed(pick, rank=1, analysis=analysis)
+
+    assert "Key Factors:" in embed["description"]
+    assert "- Elite pass rush vs weak O-line" in embed["description"]
+    assert "- Home field advantage" in embed["description"]
+
+
+def test_build_pick_embed_no_analysis():
+    pick = _make_candidate(edge=0.08, odds=-110)
+    embed = _build_pick_embed(pick, rank=1, analysis=None)
+    assert "Key Factors" not in embed["description"]
+
+
+def test_build_pick_embed_empty_key_factors():
+    pick = _make_candidate(edge=0.08, odds=-110)
+    embed = _build_pick_embed(pick, rank=1, analysis={"key_factors": []})
+    assert "Key Factors" not in embed["description"]
+
+
 def test_build_summary_embed():
     candidates = [_make_candidate(recommended_bet=30.0), _make_candidate(recommended_bet=20.0)]
     embed = _build_summary_embed(candidates, bankroll=1000.0, sport="NFL")
@@ -168,6 +195,65 @@ def test_build_results_embed_with_clv():
     embed = _build_results_embed(summary, "NFL")
     assert "Avg CLV" in embed["description"]
     assert "+1.50%" in embed["description"]
+
+
+def test_build_results_embed_with_pick_details():
+    summary = {
+        "total_bets": 2,
+        "wins": 1,
+        "losses": 1,
+        "pushes": 0,
+        "win_rate_pct": 50.0,
+        "total_pnl": -2.73,
+        "roi_pct": -4.55,
+        "avg_edge_pct": 3.0,
+    }
+    pick_details = [
+        {
+            "pick_side": "KC",
+            "bet_type": "moneyline",
+            "odds": -110,
+            "result": "win",
+            "pnl": 27.27,
+            "home_team": "KC",
+            "away_team": "BUF",
+        },
+        {
+            "pick_side": "DEN",
+            "bet_type": "spread",
+            "odds": -110,
+            "result": "loss",
+            "pnl": -30.00,
+            "home_team": "LV",
+            "away_team": "DEN",
+        },
+    ]
+    embed = _build_results_embed(summary, "NFL", pick_details=pick_details)
+
+    assert "Picks:" in embed["description"]
+    assert "WIN" in embed["description"]
+    assert "LOSS" in embed["description"]
+    assert "KC Moneyline (-110)" in embed["description"]
+    assert "BUF @ KC" in embed["description"]
+    assert "+$27.27" in embed["description"]
+    assert "DEN Spread (-110)" in embed["description"]
+    assert "DEN @ LV" in embed["description"]
+    assert "-$30.00" in embed["description"]
+
+
+def test_build_results_embed_no_pick_details():
+    summary = {
+        "total_bets": 2,
+        "wins": 1,
+        "losses": 1,
+        "pushes": 0,
+        "win_rate_pct": 50.0,
+        "total_pnl": 10.0,
+        "roi_pct": 5.0,
+        "avg_edge_pct": 3.0,
+    }
+    embed = _build_results_embed(summary, "NFL", pick_details=None)
+    assert "Picks:" not in embed["description"]
 
 
 def test_build_breakdown_embed():

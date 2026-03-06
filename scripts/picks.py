@@ -108,6 +108,9 @@ def main() -> None:
     elif sport == "NHL":
         from betting_agent.sports.nhl.loader import NHL_FULL_TO_ABBREV
         team_name_map = NHL_FULL_TO_ABBREV
+    elif sport == "MLB":
+        from betting_agent.sports.mlb.loader import MLB_FULL_TO_ABBREV
+        team_name_map = MLB_FULL_TO_ABBREV
 
     # Build upcoming game rows (minimal info from Odds API)
     upcoming_rows = []

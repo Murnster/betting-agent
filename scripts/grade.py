@@ -50,7 +50,7 @@ def main() -> None:
     if settings.discord_enabled:
         try:
             from betting_agent.notifications.discord import send_results_to_discord, is_discord_configured
-            from betting_agent.accounting.roi import get_summary, get_breakdown_by_bet_type
+            from betting_agent.accounting.roi import get_summary, get_breakdown_by_bet_type, get_graded_picks_detail
             from betting_agent.sports.registry import available_sports
             from datetime import timedelta
 
@@ -65,7 +65,8 @@ def main() -> None:
                     sports_with_results.append(sport_name)
                     logger.info("Sending results to Discord (%s)...", sport_name)
                     breakdown = get_breakdown_by_bet_type(sport=sport_name, since=graded_date)
-                    send_results_to_discord(summary, sport_name, breakdown, graded_date)
+                    pick_details = get_graded_picks_detail(sport=sport_name, since=graded_date)
+                    send_results_to_discord(summary, sport_name, breakdown, graded_date, pick_details=pick_details)
 
             # All-time results channel — only post if at least one sport had graded picks
             from betting_agent.notifications.discord import send_alltime_to_discord

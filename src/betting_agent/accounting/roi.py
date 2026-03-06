@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import func
 
+from betting_agent.config import settings
 from betting_agent.db.models import Pick
 from betting_agent.db.session import get_session
 
@@ -63,10 +64,43 @@ def get_summary(
         "win_rate_pct": _pct(wins, wins + losses),
         "total_pnl": round(total_pnl, 2),
         "total_wagered": round(total_wagered, 2),
-        "roi_pct": round((total_pnl / total_wagered * 100.0) if total_wagered else 0.0, 2),
+        "roi_pct": round((total_pnl / settings.starting_bankroll * 100.0) if settings.starting_bankroll else 0.0, 2),
         "avg_edge_pct": round(avg_edge * 100.0, 2),
         "avg_clv_pct": round(avg_clv * 100.0, 2) if avg_clv is not None else None,
     }
+
+
+def get_graded_picks_detail(
+    sport: str,
+    since: date | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return per-pick detail for graded picks, joined with Game for team names.
+    """
+    from betting_agent.db.models import Game
+    with get_session() as session:
+        q = (
+            session.query(Pick, Game)
+            .join(Game)
+            .filter(Pick.result.isnot(None), Pick.sport == sport)
+        )
+        if since:
+            q = q.filter(Pick.pick_date >= since)
+
+        rows = q.all()
+
+    return [
+        {
+            "pick_side": pick.pick_side,
+            "bet_type": pick.bet_type,
+            "odds": pick.odds,
+            "result": pick.result,
+            "pnl": pick.pnl or 0.0,
+            "home_team": game.home_team,
+            "away_team": game.away_team,
+        }
+        for pick, game in rows
+    ]
 
 
 def get_breakdown_by_bet_type(

@@ -133,10 +133,44 @@ NHL_TEAM_CITIES: dict[str, str] = {
     "Winnipeg Jets": "Winnipeg, MB",
 }
 
+MLB_TEAM_CITIES: dict[str, str] = {
+    "Arizona Diamondbacks": "Phoenix, AZ",
+    "Atlanta Braves": "Atlanta, GA",
+    "Baltimore Orioles": "Baltimore, MD",
+    "Boston Red Sox": "Boston, MA",
+    "Chicago Cubs": "Chicago, IL",
+    "Chicago White Sox": "Chicago, IL",
+    "Cincinnati Reds": "Cincinnati, OH",
+    "Cleveland Guardians": "Cleveland, OH",
+    "Colorado Rockies": "Denver, CO",
+    "Detroit Tigers": "Detroit, MI",
+    "Houston Astros": "Houston, TX",
+    "Kansas City Royals": "Kansas City, MO",
+    "Los Angeles Angels": "Anaheim, CA",
+    "Los Angeles Dodgers": "Los Angeles, CA",
+    "Miami Marlins": "Miami, FL",
+    "Milwaukee Brewers": "Milwaukee, WI",
+    "Minnesota Twins": "Minneapolis, MN",
+    "New York Mets": "Queens, NY",
+    "New York Yankees": "Bronx, NY",
+    "Athletics": "Sacramento, CA",
+    "Philadelphia Phillies": "Philadelphia, PA",
+    "Pittsburgh Pirates": "Pittsburgh, PA",
+    "San Diego Padres": "San Diego, CA",
+    "San Francisco Giants": "San Francisco, CA",
+    "Seattle Mariners": "Seattle, WA",
+    "St. Louis Cardinals": "St. Louis, MO",
+    "Tampa Bay Rays": "St. Petersburg, FL",
+    "Texas Rangers": "Arlington, TX",
+    "Toronto Blue Jays": "Toronto, ON",
+    "Washington Nationals": "Washington, DC",
+}
+
 SPORT_CITY_MAPS: dict[str, dict[str, str]] = {
     "NFL": NFL_TEAM_CITIES,
     "NBA": NBA_TEAM_CITIES,
     "NHL": NHL_TEAM_CITIES,
+    "MLB": MLB_TEAM_CITIES,
 }
 
 

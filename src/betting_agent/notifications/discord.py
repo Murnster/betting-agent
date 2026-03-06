@@ -34,7 +34,7 @@ MAX_EMBEDS_PER_MESSAGE = 10
 
 WEBHOOK_TIMEOUT = 10  # seconds
 
-SPORT_EMOJI = {"NFL": "\U0001f3c8", "NBA": "\U0001f3c0", "NHL": "\U0001f3d2"}
+SPORT_EMOJI = {"NFL": "\U0001f3c8", "NBA": "\U0001f3c0", "NHL": "\U0001f3d2", "MLB": "\u26be"}
 
 
 def _get_webhook_url(sport: str, channel_type: str) -> str | None:
@@ -85,6 +85,7 @@ def _build_pick_embed(
     pick: BetCandidate,
     rank: int,
     star_thresholds: tuple[float, float, float, float] = (0.04, 0.07, 0.12, 0.20),
+    analysis: dict | None = None,
 ) -> dict:
     """Build a Discord embed dict for a single pick."""
     label = _pick_label(pick)
@@ -97,6 +98,10 @@ def _build_pick_embed(
         f"**Model:** `{pick.model_prob:.1%}`  vs  **Market:** `{pick.implied_prob:.1%}`\n"
         f"**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}`"
     )
+
+    if analysis and analysis.get("key_factors"):
+        factors = "\n".join(f"- {f}" for f in analysis["key_factors"])
+        desc += f"\n\n**Key Factors:**\n{factors}"
 
     return {
         "title": f"#{rank}  {label}",
@@ -155,7 +160,8 @@ def send_picks_to_discord(
     embeds = [_build_summary_embed(candidates, bankroll, sport)]
     ranked = sorted(candidates, key=lambda c: c.edge, reverse=True)
     for rank, pick in enumerate(ranked, 1):
-        embeds.append(_build_pick_embed(pick, rank, star_thresholds))
+        analysis = pick.extra.get("analysis") if pick.extra else None
+        embeds.append(_build_pick_embed(pick, rank, star_thresholds, analysis=analysis))
 
     # Split into chunks of MAX_EMBEDS_PER_MESSAGE
     all_ok = True
@@ -169,7 +175,10 @@ def send_picks_to_discord(
 
 
 def _build_results_embed(
-    summary: dict[str, Any], sport: str, graded_date: date | None = None
+    summary: dict[str, Any],
+    sport: str,
+    graded_date: date | None = None,
+    pick_details: list[dict] | None = None,
 ) -> dict:
     """Build a Discord embed for grading results."""
     if "message" in summary:
@@ -202,6 +211,20 @@ def _build_results_embed(
 
     if summary.get("avg_clv_pct") is not None:
         lines[-1] += f"  |  **Avg CLV:** {summary['avg_clv_pct']:+.2f}%"
+
+    if pick_details:
+        lines.append("")
+        lines.append("**Picks:**")
+        for d in pick_details:
+            result_tag = d["result"].upper()
+            pnl_val = d["pnl"]
+            pnl_str = f"+${pnl_val:,.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):,.2f}"
+            matchup = f"{d['away_team']} @ {d['home_team']}"
+            odds_str = f"{d['odds']:+d}" if d["odds"] else ""
+            lines.append(
+                f"`{result_tag}`  {d['pick_side']} {d['bet_type'].title()} ({odds_str}) "
+                f"\u2014 {matchup} \u2014 {pnl_str}"
+            )
 
     date_str = str(graded_date) if graded_date else ""
     desc = f"{date_str}\n\n" + "\n".join(lines) if date_str else "\n".join(lines)
@@ -236,6 +259,7 @@ def send_results_to_discord(
     sport: str,
     breakdown: list[dict] | None = None,
     graded_date: date | None = None,
+    pick_details: list[dict] | None = None,
 ) -> bool:
     """
     Send grading results to the Discord results channel for the given sport.
@@ -251,7 +275,7 @@ def send_results_to_discord(
         logger.debug("No graded picks for %s, skipping Discord", sport)
         return True
 
-    embeds = [_build_results_embed(summary, sport, graded_date)]
+    embeds = [_build_results_embed(summary, sport, graded_date, pick_details=pick_details)]
     if breakdown:
         embeds.append(_build_breakdown_embed(breakdown, sport))
 

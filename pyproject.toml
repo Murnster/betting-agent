@@ -27,6 +27,7 @@ dependencies = [
     "pyarrow>=23.0.1",
     "nba-api>=1.11.4",
     "nhl-api-py>=0.1.0",
+    "python-mlb-statsapi>=0.7.2",
 ]
 
 [project.optional-dependencies]
