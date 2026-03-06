@@ -113,6 +113,8 @@ def fetch_team_context(
     """
     if sport.upper() == "NBA":
         return _fetch_nba_team_context(team, season, depth)
+    if sport.upper() == "NHL":
+        return _fetch_nhl_team_context(team, season, depth)
     return _fetch_nfl_team_context(team, season, week, depth)
 
 
@@ -389,6 +391,118 @@ def _fetch_nba_team_context(
                     )
     except Exception as exc:
         logger.debug("Could not load NBA player stats for %s: %s", team, exc)
+
+    return "\n".join(lines)
+
+
+def _fetch_nhl_team_context(
+    team: str, season: int, depth: str = "full",
+) -> str:
+    """
+    Build context text for an NHL team from nhlpy data sources.
+
+    Uses standings for team record and skater/goalie stats endpoints
+    for key player info. Rate-limited between calls.
+    """
+    import time
+    from betting_agent.sports.nhl.loader import int_to_nhl_season, NHL_ABBREV_TO_FULL
+    from betting_agent.config import settings as cfg
+
+    display_name = NHL_ABBREV_TO_FULL.get(team, team)
+    lines = [f"Team: {display_name} ({team}), Season: {season}"]
+    lines.append("\nNote: NHL injury data is not available via API.")
+
+    nhl_season = int_to_nhl_season(season)
+
+    if depth == "basic":
+        return "\n".join(lines)
+
+    # ---- Standings (record, GF/GA) ----
+    try:
+        from nhlpy import NHLClient
+
+        client = NHLClient()
+        standings = client.standings.league_standings(season=nhl_season)
+        time.sleep(cfg.nhl_api_rate_limit)
+
+        for team_entry in standings.get("standings", []):
+            abbrev = team_entry.get("teamAbbrev", {}).get("default", "")
+            if abbrev == team:
+                wins = team_entry.get("wins", 0)
+                losses = team_entry.get("losses", 0)
+                ot_losses = team_entry.get("otLosses", 0)
+                points = team_entry.get("points", 0)
+                gf = team_entry.get("goalFor", 0)
+                ga = team_entry.get("goalAgainst", 0)
+                lines.append(f"\nRecord: {wins}-{losses}-{ot_losses} ({points} pts)")
+                lines.append(f"Goals: GF={gf}, GA={ga}, Diff={gf - ga}")
+                break
+    except Exception as exc:
+        logger.debug("Could not load NHL standings for %s: %s", team, exc)
+
+    # ---- Top 5 skaters by points ----
+    try:
+        from nhlpy import NHLClient
+
+        client = NHLClient()
+        skater_stats = client.stats.skater_stats_summary(
+            start_season=nhl_season, end_season=nhl_season
+        )
+        time.sleep(cfg.nhl_api_rate_limit)
+
+        if skater_stats:
+            team_skaters = [
+                p for p in skater_stats
+                if p.get("teamAbbrevs", "") == team
+            ]
+            team_skaters.sort(key=lambda p: p.get("points", 0), reverse=True)
+            top5 = team_skaters[:5]
+
+            if top5:
+                lines.append("\nKey Skaters (by points):")
+                for p in top5:
+                    name = p.get("skaterFullName", "?")
+                    pts = p.get("points", 0)
+                    goals = p.get("goals", 0)
+                    assists = p.get("assists", 0)
+                    gp = p.get("gamesPlayed", 0)
+                    lines.append(
+                        f"  {name}: {pts} pts ({goals}G, {assists}A) in {gp} GP"
+                    )
+    except Exception as exc:
+        logger.debug("Could not load NHL skater stats for %s: %s", team, exc)
+
+    # ---- Top goalie (SV%, GAA) ----
+    try:
+        from nhlpy import NHLClient
+
+        client = NHLClient()
+        goalie_stats = client.stats.goalie_stats_summary(
+            start_season=nhl_season, end_season=nhl_season
+        )
+        time.sleep(cfg.nhl_api_rate_limit)
+
+        if goalie_stats:
+            team_goalies = [
+                g for g in goalie_stats
+                if g.get("teamAbbrevs", "") == team
+            ]
+            team_goalies.sort(key=lambda g: g.get("gamesPlayed", 0), reverse=True)
+
+            if team_goalies:
+                g = team_goalies[0]
+                name = g.get("goalieFullName", "?")
+                gp = g.get("gamesPlayed", 0)
+                sv_pct = g.get("savePctg", 0)
+                gaa = g.get("goalsAgainstAverage", 0)
+                wins = g.get("wins", 0)
+                losses = g.get("losses", 0)
+                lines.append(
+                    f"\nTop Goalie: {name} ({gp} GP, {wins}W-{losses}L, "
+                    f"SV%={sv_pct:.3f}, GAA={gaa:.2f})"
+                )
+    except Exception as exc:
+        logger.debug("Could not load NHL goalie stats for %s: %s", team, exc)
 
     return "\n".join(lines)
 

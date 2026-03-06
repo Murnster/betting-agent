@@ -70,14 +70,16 @@ def main() -> None:
         return
 
     # Filter out games that have already started (with 5 min buffer)
-    from datetime import datetime, timezone
+    # AND games that start more than 24 hours from now
+    from datetime import datetime, timezone, timedelta
     now_utc = datetime.now(timezone.utc)
+    max_lookahead = now_utc + timedelta(hours=24)
     filtered_games = []
     for g in raw_games:
         try:
             commence_time = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00"))
-            # If game starts more than 5 minutes from now
-            if (commence_time - now_utc).total_seconds() > -300:
+            # If game starts more than 5 minutes from now AND within next 24 hours
+            if (commence_time - now_utc).total_seconds() > -300 and commence_time <= max_lookahead:
                 filtered_games.append(g)
         except (KeyError, ValueError):
             filtered_games.append(g)
@@ -98,11 +100,14 @@ def main() -> None:
         logger.warning("Could not load history: %s", exc)
         hist_df = pd.DataFrame()
 
-    # For NBA, we need to map Odds API full names → abbreviations
+    # For NBA/NHL, we need to map Odds API full names → abbreviations
     team_name_map = None
     if sport == "NBA":
         from betting_agent.sports.nba.loader import NBA_FULL_TO_ABBREV
         team_name_map = NBA_FULL_TO_ABBREV
+    elif sport == "NHL":
+        from betting_agent.sports.nhl.loader import NHL_FULL_TO_ABBREV
+        team_name_map = NHL_FULL_TO_ABBREV
 
     # Build upcoming game rows (minimal info from Odds API)
     upcoming_rows = []

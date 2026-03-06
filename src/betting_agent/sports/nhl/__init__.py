@@ -1,1 +1,3 @@
-# NHL stub — Phase 10
+from betting_agent.sports.nhl.loader import NHLLoader
+
+__all__ = ["NHLLoader"]

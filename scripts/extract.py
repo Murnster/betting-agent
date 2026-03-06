@@ -97,9 +97,46 @@ NBA_TEAM_CITIES: dict[str, str] = {
     "Washington Wizards": "Washington, DC",
 }
 
+NHL_TEAM_CITIES: dict[str, str] = {
+    "Anaheim Ducks": "Anaheim, CA",
+    "Arizona Coyotes": "Tempe, AZ",
+    "Boston Bruins": "Boston, MA",
+    "Buffalo Sabres": "Buffalo, NY",
+    "Calgary Flames": "Calgary, AB",
+    "Carolina Hurricanes": "Raleigh, NC",
+    "Chicago Blackhawks": "Chicago, IL",
+    "Colorado Avalanche": "Denver, CO",
+    "Columbus Blue Jackets": "Columbus, OH",
+    "Dallas Stars": "Dallas, TX",
+    "Detroit Red Wings": "Detroit, MI",
+    "Edmonton Oilers": "Edmonton, AB",
+    "Florida Panthers": "Sunrise, FL",
+    "Los Angeles Kings": "Los Angeles, CA",
+    "Minnesota Wild": "Saint Paul, MN",
+    "Montreal Canadiens": "Montreal, QC",
+    "Nashville Predators": "Nashville, TN",
+    "New Jersey Devils": "Newark, NJ",
+    "New York Islanders": "Elmont, NY",
+    "New York Rangers": "New York, NY",
+    "Ottawa Senators": "Ottawa, ON",
+    "Philadelphia Flyers": "Philadelphia, PA",
+    "Pittsburgh Penguins": "Pittsburgh, PA",
+    "San Jose Sharks": "San Jose, CA",
+    "Seattle Kraken": "Seattle, WA",
+    "St. Louis Blues": "St. Louis, MO",
+    "Tampa Bay Lightning": "Tampa, FL",
+    "Toronto Maple Leafs": "Toronto, ON",
+    "Utah Hockey Club": "Salt Lake City, UT",
+    "Vancouver Canucks": "Vancouver, BC",
+    "Vegas Golden Knights": "Las Vegas, NV",
+    "Washington Capitals": "Washington, DC",
+    "Winnipeg Jets": "Winnipeg, MB",
+}
+
 SPORT_CITY_MAPS: dict[str, dict[str, str]] = {
     "NFL": NFL_TEAM_CITIES,
     "NBA": NBA_TEAM_CITIES,
+    "NHL": NHL_TEAM_CITIES,
 }
 
 

@@ -43,6 +43,22 @@ class Game(Base):
     status = Column(String(20), default="scheduled")    # scheduled|final|cancelled
     external_id = Column(String(100), unique=True, nullable=True)  # from Odds API
 
+    # NHL Box Score Stats
+    home_sog = Column(Integer, nullable=True)
+    away_sog = Column(Integer, nullable=True)
+    home_ppg = Column(Integer, nullable=True)
+    away_ppg = Column(Integer, nullable=True)
+    home_ppo = Column(Integer, nullable=True)
+    away_ppo = Column(Integer, nullable=True)
+    home_pim = Column(Integer, nullable=True)
+    away_pim = Column(Integer, nullable=True)
+    home_hits = Column(Integer, nullable=True)
+    away_hits = Column(Integer, nullable=True)
+    home_blocks = Column(Integer, nullable=True)
+    away_blocks = Column(Integer, nullable=True)
+    home_faceoff_pct = Column(Float, nullable=True)
+    away_faceoff_pct = Column(Float, nullable=True)
+
     odds = relationship("Odds", back_populates="game", cascade="all, delete-orphan")
     sentiment = relationship("Sentiment", back_populates="game", cascade="all, delete-orphan")
     picks = relationship("Pick", back_populates="game", cascade="all, delete-orphan")

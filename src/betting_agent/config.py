@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # NBA API
     nba_api_rate_limit: float = Field(default=0.6, description="Seconds between nba_api calls")
 
+    # NHL API
+    nhl_api_rate_limit: float = Field(default=0.5, description="Seconds between nhlpy calls")
+
     # Discord
     discord_enabled: bool = Field(default=True, description="Enable Discord webhook notifications")
 

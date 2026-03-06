@@ -51,6 +51,14 @@ def get_scheduled_games(session: Session, sport: str = "NFL", target_date: Optio
     return q.all()
 
 
+def get_games_by_season(session: Session, sport: str, seasons: list[int]) -> list[Game]:
+    return (
+        session.query(Game)
+        .filter(Game.sport == sport, Game.season.in_(seasons))
+        .all()
+    )
+
+
 def upsert_game(session: Session, game_data: dict) -> Game:
     """Insert or update a game by external_id."""
     external_id = game_data.get("external_id")

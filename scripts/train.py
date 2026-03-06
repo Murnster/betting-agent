@@ -91,6 +91,11 @@ def main() -> None:
         action="store_true",
         help="Skip seeding the DB (just train from data directly)",
     )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Cache raw schedules to parquet; reuse cached file if it exists",
+    )
     args = parser.parse_args()
 
     sport = args.sport.upper()
@@ -101,14 +106,26 @@ def main() -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 1. Load raw schedules ----
-    logger.info("Loading %s schedules for seasons: %s", sport, seasons)
+    cache_path = save_dir / "raw_schedules.parquet"
     loader = config.loader_cls()
-    raw_pl = loader.load_schedules(seasons)
-    raw = raw_pl.to_pandas()
+
+    if args.cache and cache_path.exists():
+        import pandas as pd
+        logger.info("Loading cached schedules from %s", cache_path)
+        raw = pd.read_parquet(cache_path)
+        raw_pl = None  # skip DB seed when loading from cache
+    else:
+        logger.info("Loading %s schedules for seasons: %s", sport, seasons)
+        raw_pl = loader.load_schedules(seasons)
+        raw = raw_pl.to_pandas()
+        if args.cache:
+            raw.to_parquet(cache_path)
+            logger.info("Cached raw schedules to %s", cache_path)
+
     logger.info("Raw schedules: %d rows", len(raw))
 
     # Optionally seed DB
-    if not args.no_seed:
+    if not args.no_seed and raw_pl is not None:
         try:
             n = loader.seed_games_table(seasons, df=raw_pl)
             logger.info("DB seeded: %d new games", n)
