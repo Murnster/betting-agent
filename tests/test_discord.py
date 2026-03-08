@@ -496,11 +496,12 @@ def test_send_alltime_sends_header_plus_sport_embeds(mock_send, monkeypatch):
     assert result is True
     assert mock_send.call_count == 1
 
-    # 1 header + 2 sport embeds = 3
+    # 1 header + 1 all-sports + 2 sport embeds = 4
     embeds = mock_send.call_args_list[0][0][1]["embeds"]
-    assert len(embeds) == 3
+    assert len(embeds) == 4
     assert embeds[0]["title"] == "All-Time Results"
     assert embeds[0]["color"] == COLOR_BLUE
+    assert "All Sports" in embeds[1]["title"]
 
 
 @patch("betting_agent.notifications.discord._send_webhook")
@@ -539,7 +540,8 @@ def test_send_alltime_filters_out_empty_sports(mock_send, monkeypatch):
     }
     result = send_alltime_to_discord(summaries, 1000.0)
     assert result is True
-    # 1 header + 1 sport (NBA only, NFL filtered out) = 2
+    # 1 header + 1 all-sports + 1 sport (NBA only, NFL filtered out) = 3
     embeds = mock_send.call_args_list[0][0][1]["embeds"]
-    assert len(embeds) == 2
-    assert embeds[1]["title"] == "NBA"
+    assert len(embeds) == 3
+    assert "All Sports" in embeds[1]["title"]
+    assert "NBA" in embeds[2]["title"]

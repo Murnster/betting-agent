@@ -330,6 +330,62 @@ def _build_alltime_sport_embed(
     }
 
 
+def _aggregate_sport_summaries(
+    summaries: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Combine multiple sport summaries into a single aggregate."""
+    total_bets = sum(s.get("total_bets", 0) for s in summaries.values())
+    if total_bets == 0:
+        return {"message": "No graded picks found"}
+
+    wins = sum(s.get("wins", 0) for s in summaries.values())
+    losses = sum(s.get("losses", 0) for s in summaries.values())
+    pushes = sum(s.get("pushes", 0) for s in summaries.values())
+    total_pnl = sum(s.get("total_pnl", 0) for s in summaries.values())
+    total_wagered = sum(s.get("total_wagered", 0) for s in summaries.values())
+
+    # Weighted average of edge across all picks
+    weighted_edge = sum(
+        s.get("avg_edge_pct", 0) * s.get("total_bets", 0) for s in summaries.values()
+    )
+    avg_edge = weighted_edge / total_bets
+
+    # Weighted average CLV (only from sports that have it)
+    clv_bets = sum(
+        s.get("total_bets", 0)
+        for s in summaries.values()
+        if s.get("avg_clv_pct") is not None
+    )
+    avg_clv = None
+    if clv_bets > 0:
+        weighted_clv = sum(
+            s["avg_clv_pct"] * s.get("total_bets", 0)
+            for s in summaries.values()
+            if s.get("avg_clv_pct") is not None
+        )
+        avg_clv = weighted_clv / clv_bets
+
+    from betting_agent.config import settings
+
+    return {
+        "total_bets": total_bets,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "win_rate_pct": (wins / (wins + losses) * 100.0) if (wins + losses) else 0.0,
+        "total_pnl": round(total_pnl, 2),
+        "total_wagered": round(total_wagered, 2),
+        "roi_pct": round(
+            (total_pnl / settings.starting_bankroll * 100.0)
+            if settings.starting_bankroll
+            else 0.0,
+            2,
+        ),
+        "avg_edge_pct": round(avg_edge, 2),
+        "avg_clv_pct": round(avg_clv, 2) if avg_clv is not None else None,
+    }
+
+
 def send_alltime_to_discord(
     sport_summaries: dict[str, dict[str, Any]],
     starting_bankroll: float,
@@ -371,8 +427,14 @@ def send_alltime_to_discord(
         return True
 
     embeds = [header]
+
+    # Combined "All Sports" embed above individual sports
+    combined = _aggregate_sport_summaries(active_summaries)
+    embeds.append(_build_alltime_sport_embed(combined, "🏆 All Sports", starting_bankroll))
+
     for sport, summary in sorted(active_summaries.items()):
-        embeds.append(_build_alltime_sport_embed(summary, sport, starting_bankroll))
+        emoji = SPORT_EMOJI.get(sport.upper(), "")
+        embeds.append(_build_alltime_sport_embed(summary, f"{emoji} {sport}" if emoji else sport, starting_bankroll))
 
     all_ok = True
     for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
