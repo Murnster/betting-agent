@@ -21,6 +21,7 @@ def _pct(num: int, denom: int) -> float:
 def get_summary(
     sport: str | None = None,
     since: date | None = None,
+    until: date | None = None,
     bet_type: str | None = None,
     season: int | None = None,
 ) -> dict[str, Any]:
@@ -36,6 +37,8 @@ def get_summary(
             q = q.filter(Pick.sport == sport)
         if since:
             q = q.filter(Pick.pick_date >= since)
+        if until:
+            q = q.filter(Pick.pick_date <= until)
         if bet_type:
             q = q.filter(Pick.bet_type == bet_type)
         if season:
@@ -73,6 +76,7 @@ def get_summary(
 def get_graded_picks_detail(
     sport: str,
     since: date | None = None,
+    until: date | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return per-pick detail for graded picks, joined with Game for team names.
@@ -86,6 +90,8 @@ def get_graded_picks_detail(
         )
         if since:
             q = q.filter(Pick.pick_date >= since)
+        if until:
+            q = q.filter(Pick.pick_date <= until)
 
         rows = q.all()
 
@@ -106,13 +112,14 @@ def get_graded_picks_detail(
 def get_breakdown_by_bet_type(
     sport: str | None = None,
     since: date | None = None,
+    until: date | None = None,
     season: int | None = None,
 ) -> list[dict]:
     """Per-bet-type breakdown."""
     bet_types = ["moneyline", "spread", "total", "prop"]
     rows = []
     for bt in bet_types:
-        summary = get_summary(sport=sport, since=since, bet_type=bt, season=season)
+        summary = get_summary(sport=sport, since=since, until=until, bet_type=bt, season=season)
         if "total_bets" in summary and summary["total_bets"] > 0:
             rows.append({"bet_type": bt, **summary})
     return rows

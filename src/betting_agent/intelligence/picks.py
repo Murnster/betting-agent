@@ -92,6 +92,7 @@ def generate_picks(
 
         # Find best odds for this game (use Odds API name if available)
         home_odds_name = str(meta.get("home_team_odds", home))
+        away_odds_name = str(meta.get("away_team_odds", away))
         best_odds = _find_best_odds(odds_data, home_odds_name)
 
         win_prob = float(pred_row["win_prob"])
@@ -122,7 +123,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
-                    bet_type="moneyline", pick_side=home,
+                    bet_type="moneyline", pick_side=home_odds_name,
                     model_prob=win_prob, implied_prob=implied, edge=edge,
                     odds=ml_home, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,
@@ -141,7 +142,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
-                    bet_type="moneyline", pick_side=away,
+                    bet_type="moneyline", pick_side=away_odds_name,
                     model_prob=away_win_prob, implied_prob=implied, edge=edge,
                     odds=ml_away, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,
@@ -163,7 +164,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
-                    bet_type="spread", pick_side=f"{home} {spread_line:+.1f}",
+                    bet_type="spread", pick_side=f"{home_odds_name} {spread_line:+.1f}",
                     model_prob=cover_prob, implied_prob=implied, edge=s_edge,
                     odds=spread_home_price, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,

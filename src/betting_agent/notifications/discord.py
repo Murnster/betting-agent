@@ -333,6 +333,7 @@ def _build_alltime_sport_embed(
 def send_alltime_to_discord(
     sport_summaries: dict[str, dict[str, Any]],
     starting_bankroll: float,
+    as_of_date: date | None = None,
 ) -> bool:
     """
     Send all-time results for all sports to the alltime-results channel.
@@ -340,6 +341,7 @@ def send_alltime_to_discord(
     Args:
         sport_summaries: mapping of sport name → get_summary() result (no date filter).
         starting_bankroll: the original bankroll each sport started with.
+        as_of_date: the date to display; defaults to today.
 
     Uses DISCORD_WEBHOOK_ALLTIME_RESULTS env var.
     Returns True if sent successfully, False otherwise.
@@ -354,7 +356,7 @@ def send_alltime_to_discord(
 
     header: dict[str, Any] = {
         "title": "All-Time Results",
-        "description": str(date.today()),
+        "description": str(as_of_date or date.today()),
         "color": COLOR_BLUE,
     }
 

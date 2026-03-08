@@ -6,7 +6,7 @@ Sets result (win/loss/push) and pnl on Pick rows.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.queries import get_ungraded_picks
@@ -98,14 +98,31 @@ def _calculate_pnl(pick: Pick, result: str) -> float:
         return -bet
 
 
-def grade_picks() -> int:
+def grade_picks(target_date: date | None = None) -> int:
     """
     Grade all ungraded picks for games with final scores.
+    When target_date is provided, reset and re-grade only that date's picks.
     Returns the number of picks graded.
     """
     graded = 0
     with get_session() as session:
-        picks = get_ungraded_picks(session)
+        if target_date is not None:
+            # Reset all picks for the target date so they can be re-graded
+            picks_to_reset = (
+                session.query(Pick)
+                .filter(Pick.pick_date == target_date)
+                .all()
+            )
+            for pick in picks_to_reset:
+                pick.result = None
+                pick.pnl = None
+                pick.graded_at = None
+                pick.clv = None
+                pick.closing_odds = None
+            session.flush()
+            logger.info("Reset %d picks for %s", len(picks_to_reset), target_date)
+
+        picks = get_ungraded_picks(session, pick_date=target_date)
         for pick in picks:
             game: Game = pick.game
             if game is None or game.status != "final":

@@ -33,6 +33,19 @@ def test_grade_moneyline_loss():
     assert _grade_moneyline(pick, game) == "loss"
 
 
+def test_grade_moneyline_nba_win():
+    """NBA picks now use full Odds API names — must match game table names."""
+    pick = _make_pick(pick_side="Boston Celtics")
+    game = _make_game(home_team="Boston Celtics", away_team="Miami Heat", home_score=110, away_score=102)
+    assert _grade_moneyline(pick, game) == "win"
+
+
+def test_grade_moneyline_nba_loss():
+    pick = _make_pick(pick_side="Miami Heat")
+    game = _make_game(home_team="Boston Celtics", away_team="Miami Heat", home_score=110, away_score=102)
+    assert _grade_moneyline(pick, game) == "loss"
+
+
 def test_grade_moneyline_tie():
     pick = _make_pick(pick_side="Kansas City Chiefs")
     game = _make_game(home_team="Kansas City Chiefs", away_team="Buffalo Bills", home_score=24, away_score=24)
@@ -52,6 +65,21 @@ def test_grade_spread_fails():
     pick = _make_pick(pick_side="Kansas City Chiefs +2.5")
     game = _make_game(home_team="Kansas City Chiefs", away_team="Buffalo Bills", home_score=24, away_score=27)
     # KC lost by 3, had +2.5 → doesn't cover (24 - 27 + 2.5 = -0.5 < 0)
+    assert _grade_spread(pick, game) == "loss"
+
+
+def test_grade_spread_nba_covers():
+    """NBA spread pick uses full team name — grader must match correctly."""
+    pick = _make_pick(pick_side="Boston Celtics +4.5")
+    game = _make_game(home_team="Boston Celtics", away_team="Miami Heat", home_score=100, away_score=103)
+    # Lost by 3, had +4.5 → covers (100 - 103 + 4.5 = 1.5 > 0)
+    assert _grade_spread(pick, game) == "win"
+
+
+def test_grade_spread_nba_fails():
+    pick = _make_pick(pick_side="Boston Celtics +2.5")
+    game = _make_game(home_team="Boston Celtics", away_team="Miami Heat", home_score=100, away_score=103)
+    # Lost by 3, had +2.5 → doesn't cover (100 - 103 + 2.5 = -0.5 < 0)
     assert _grade_spread(pick, game) == "loss"
 
 

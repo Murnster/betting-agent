@@ -158,6 +158,9 @@ def main() -> None:
     # Combine history + upcoming for feature computation.
     # Tag upcoming rows so we can retrieve them after sort inside build_features.
     upcoming_df["_is_upcoming"] = True
+    # Preserve original row order — build_features() sorts by game_date which can
+    # reorder rows within the same date, breaking the metadata ↔ features alignment.
+    upcoming_df["_upcoming_idx"] = range(len(upcoming_df))
 
     if not hist_df.empty:
         # Normalise history columns to canonical names for concat
@@ -183,12 +186,15 @@ def main() -> None:
         combined = upcoming_df
 
     features_all = config.build_features(combined)
-    # Retrieve upcoming rows by the tag column
+    # Retrieve upcoming rows by the tag column, then restore original order
     if "_is_upcoming" in features_all.columns:
-        features = features_all[features_all["_is_upcoming"] == True].drop(columns=["_is_upcoming"]).reset_index(drop=True)
+        upcoming_features = features_all[features_all["_is_upcoming"] == True].copy()
+        if "_upcoming_idx" in upcoming_features.columns:
+            upcoming_features = upcoming_features.sort_values("_upcoming_idx")
+        features = upcoming_features.drop(columns=["_is_upcoming", "_upcoming_idx"], errors="ignore").reset_index(drop=True)
     else:
         features = features_all.tail(len(upcoming_df)).reset_index(drop=True)
-    metadata = upcoming_df.drop(columns=["_is_upcoming"], errors="ignore").reset_index(drop=True)
+    metadata = upcoming_df.drop(columns=["_is_upcoming", "_upcoming_idx"], errors="ignore").reset_index(drop=True)
 
     # ---- Sentiment + Game Analysis (optional) ----
     sentiment_scores: dict[str, float] | None = None

@@ -14,14 +14,16 @@ def get_game_by_external_id(session: Session, external_id: str) -> Optional[Game
     return session.query(Game).filter(Game.external_id == external_id).first()
 
 
-def get_ungraded_picks(session: Session) -> list[Pick]:
-    return (
+def get_ungraded_picks(session: Session, pick_date: date | None = None) -> list[Pick]:
+    q = (
         session.query(Pick)
         .filter(Pick.result.is_(None))
         .join(Game)
         .filter(Game.status == "final")
-        .all()
     )
+    if pick_date is not None:
+        q = q.filter(Pick.pick_date == pick_date)
+    return q.all()
 
 
 def get_picks_for_date(session: Session, pick_date: date, sport: str = "NFL") -> list[Pick]:
