@@ -6,7 +6,6 @@ Converts raw API data to a standardised Polars DataFrame and seeds the DB.
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 import nflreadpy as nfl
 import polars as pl

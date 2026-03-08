@@ -87,7 +87,6 @@ def _pivot_game_log(df, season: int, is_playoff: bool) -> list[dict]:
 
     Home team identified by 'vs.' in MATCHUP, away by '@'.
     """
-    import pandas as pd
 
     if df is None or df.empty:
         return []

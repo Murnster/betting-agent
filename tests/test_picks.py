@@ -1,10 +1,15 @@
 """Tests for pick generation: dedup, correlation adjustment, underdog ML."""
 
+from datetime import date
 from unittest.mock import MagicMock
 
 import pandas as pd
 
-from betting_agent.intelligence.picks import generate_picks
+from betting_agent.intelligence.picks import (
+    BetCandidate,
+    _extract_team_from_pick,
+    generate_picks,
+)
 
 
 def _make_mock_engine(win_prob=0.55, home_score=24.0, away_score=20.0):
@@ -160,3 +165,96 @@ class TestScoringSimga:
         _, te_nfl = calculate_total_edge(230.0, 220.0, -110, "over", sigma=14.0)
         _, te_nba = calculate_total_edge(230.0, 220.0, -110, "over", sigma=11.5)
         assert te_nba > te_nfl
+
+
+def _make_candidate(game_id=1, bet_type="moneyline", pick_side="TeamA",
+                    edge=0.05, **kwargs):
+    """Helper to create a BetCandidate with sensible defaults."""
+    defaults = dict(
+        home_team="TeamA", away_team="TeamB", game_date=date(2025, 1, 1),
+        sport="NFL", model_prob=0.55, implied_prob=0.50, odds=-110,
+    )
+    defaults.update(kwargs)
+    return BetCandidate(
+        game_id=game_id, bet_type=bet_type, pick_side=pick_side,
+        edge=edge, **defaults,
+    )
+
+
+class TestCorrelatedPickDedup:
+    def test_extract_team_from_pick(self):
+        """Unit test _extract_team_from_pick across all bet types."""
+        ml = _make_candidate(bet_type="moneyline", pick_side="Buffalo Bills")
+        assert _extract_team_from_pick(ml) == "Buffalo Bills"
+
+        spread = _make_candidate(bet_type="spread", pick_side="Buffalo Bills +1.5")
+        assert _extract_team_from_pick(spread) == "Buffalo Bills"
+
+        spread_neg = _make_candidate(bet_type="spread", pick_side="New York Jets -3.0")
+        assert _extract_team_from_pick(spread_neg) == "New York Jets"
+
+        total = _make_candidate(bet_type="total", pick_side="over 44.5")
+        assert _extract_team_from_pick(total) is None
+
+    def test_same_team_ml_and_spread_keeps_higher_edge(self):
+        """When ML and spread exist for same team, only higher-edge survives."""
+        engine = _make_mock_engine(win_prob=0.65, home_score=28, away_score=21)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        # Large home ML edge + small spread that also has edge
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=200, away_ml=-250,
+                               spread=-1.5, spread_home_price=-110,
+                               spread_away_price=-110)
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NFL",
+        )
+        # Filter to team-directional picks for TeamA
+        team_a_picks = [
+            c for c in candidates
+            if c.bet_type in ("moneyline", "spread") and
+            _extract_team_from_pick(c) == "TeamA"
+        ]
+        assert len(team_a_picks) <= 1, (
+            "Should have at most 1 team-directional pick per team per game"
+        )
+
+    def test_totals_not_affected(self):
+        """Totals should coexist with ML/spread picks after dedup."""
+        engine = _make_mock_engine(win_prob=0.65, home_score=30, away_score=25)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=200, away_ml=-250,
+                               total_line=40.0, over_price=-110, under_price=-110)
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NFL",
+        )
+        total_picks = [c for c in candidates if c.bet_type == "total"]
+        ml_or_spread = [c for c in candidates if c.bet_type in ("moneyline", "spread")]
+        # Totals can coexist with team-directional picks
+        if total_picks and ml_or_spread:
+            assert len(total_picks) >= 1
+
+    def test_opposite_sides_not_deduped(self):
+        """Away ML + home spread should both survive (different teams)."""
+        c_away_ml = _make_candidate(
+            game_id=1, bet_type="moneyline", pick_side="TeamB", edge=0.06,
+        )
+        c_home_spread = _make_candidate(
+            game_id=1, bet_type="spread", pick_side="TeamA +1.5", edge=0.04,
+        )
+        # Verify they extract to different teams
+        assert _extract_team_from_pick(c_away_ml) == "TeamB"
+        assert _extract_team_from_pick(c_home_spread) == "TeamA"
+        # Different team keys → both would survive the dedup

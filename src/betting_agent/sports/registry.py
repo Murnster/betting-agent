@@ -10,8 +10,8 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Type
+from dataclasses import dataclass
+from typing import Callable, Type
 
 import pandas as pd
 

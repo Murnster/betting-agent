@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from betting_agent.db.models import Odds, Pick
+from betting_agent.db.models import Pick
 from betting_agent.db.queries import get_closing_odds
 from betting_agent.db.session import get_session
 from betting_agent.intelligence.ev import american_to_implied_prob

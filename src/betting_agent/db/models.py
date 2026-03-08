@@ -3,7 +3,7 @@ SQLAlchemy ORM models for betting agent DB schema.
 Tables: games, odds, sentiment, picks
 """
 
-from datetime import datetime, date
+from datetime import datetime
 from sqlalchemy import (
     Boolean,
     Column,
@@ -13,7 +13,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy import TIMESTAMP as TIMESTAMPTZ
 from sqlalchemy.orm import DeclarativeBase, relationship

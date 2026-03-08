@@ -4,7 +4,6 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from betting_agent.sports.nba.features import (
     DIVISIONS,
@@ -80,7 +79,7 @@ class TestNormaliseNbaSchedules:
             "is_playoff": [True],
         })
         result = normalise_nba_schedules(df)
-        assert result["is_playoff"].iloc[0] == True
+        assert result["is_playoff"].iloc[0]
 
 
 class TestBuildNbaFeatures:

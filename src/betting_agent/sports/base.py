@@ -4,7 +4,6 @@ Each sport implements these methods so the pipeline scaffolding stays generic.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
 
 import polars as pl
 

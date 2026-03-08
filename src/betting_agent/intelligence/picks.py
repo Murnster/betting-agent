@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
 
 import pandas as pd
 
@@ -96,8 +95,6 @@ def generate_picks(
         best_odds = _find_best_odds(odds_data, home_odds_name)
 
         win_prob = float(pred_row["win_prob"])
-        home_pred = float(pred_row["home_pred_score"])
-        away_pred = float(pred_row["away_pred_score"])
         pred_margin = float(pred_row["pred_margin"])
         pred_total = float(pred_row["pred_total"])
 
@@ -216,6 +213,20 @@ def generate_picks(
             seen[key] = c
     candidates = list(seen.values())
 
+    # Dedup correlated ML/spread: when both exist for the same team
+    # in the same game, keep only the higher-edge pick.
+    team_bets: dict[tuple[int, str], BetCandidate] = {}
+    uncorrelated: list[BetCandidate] = []
+    for c in candidates:
+        team = _extract_team_from_pick(c)
+        if team is None:
+            uncorrelated.append(c)
+            continue
+        key = (c.game_id, team)
+        if key not in team_bets or c.edge > team_bets[key].edge:
+            team_bets[key] = c
+    candidates = uncorrelated + list(team_bets.values())
+
     # Same-game correlation adjustment: scale Kelly down by 1/sqrt(n)
     # where n = number of bets on the same game
     from collections import Counter
@@ -231,6 +242,19 @@ def generate_picks(
     # Sort by edge descending
     candidates.sort(key=lambda c: c.edge, reverse=True)
     return candidates
+
+
+def _extract_team_from_pick(candidate: BetCandidate) -> str | None:
+    """Extract the team name from a pick for correlated-bet dedup.
+
+    Returns None for totals (not team-directional).
+    """
+    if candidate.bet_type == "moneyline":
+        return candidate.pick_side
+    if candidate.bet_type == "spread":
+        # Strip the spread number, e.g. "Buffalo Bills +1.5" → "Buffalo Bills"
+        return candidate.pick_side.rsplit(" ", 1)[0]
+    return None
 
 
 def _find_best_odds(odds_data: list[dict], home_team: str) -> dict:

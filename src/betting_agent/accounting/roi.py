@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from sqlalchemy import func
 
 from betting_agent.config import settings
 from betting_agent.db.models import Pick

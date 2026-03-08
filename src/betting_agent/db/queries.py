@@ -40,7 +40,7 @@ def get_closing_odds(session: Session, game_id: int, bet_type: str) -> Optional[
         .filter(
             Odds.game_id == game_id,
             Odds.bet_type == bet_type,
-            Odds.is_closing == True,
+            Odds.is_closing.is_(True),
         )
         .first()
     )

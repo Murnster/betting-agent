@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from betting_agent.intelligence.picks import BetCandidate
 from betting_agent.notifications.discord import (
