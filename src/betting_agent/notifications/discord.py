@@ -332,6 +332,7 @@ def _build_alltime_sport_embed(
 
 def _aggregate_sport_summaries(
     summaries: dict[str, dict[str, Any]],
+    total_starting_bankroll: float,
 ) -> dict[str, Any]:
     """Combine multiple sport summaries into a single aggregate."""
     total_bets = sum(s.get("total_bets", 0) for s in summaries.values())
@@ -365,8 +366,6 @@ def _aggregate_sport_summaries(
         )
         avg_clv = weighted_clv / clv_bets
 
-    from betting_agent.config import settings
-
     return {
         "total_bets": total_bets,
         "wins": wins,
@@ -376,8 +375,8 @@ def _aggregate_sport_summaries(
         "total_pnl": round(total_pnl, 2),
         "total_wagered": round(total_wagered, 2),
         "roi_pct": round(
-            (total_pnl / settings.starting_bankroll * 100.0)
-            if settings.starting_bankroll
+            (total_pnl / total_starting_bankroll * 100.0)
+            if total_starting_bankroll
             else 0.0,
             2,
         ),
@@ -428,9 +427,17 @@ def send_alltime_to_discord(
 
     embeds = [header]
 
-    # Combined "All Sports" embed above individual sports
-    combined = _aggregate_sport_summaries(active_summaries)
-    embeds.append(_build_alltime_sport_embed(combined, "🏆 All Sports", starting_bankroll))
+    # Combined "All Sports" embed above individual sports. The aggregate bankroll
+    # should reflect one bankroll allocation per sport with graded picks.
+    combined_starting_bankroll = starting_bankroll * len(active_summaries)
+    combined = _aggregate_sport_summaries(active_summaries, combined_starting_bankroll)
+    embeds.append(
+        _build_alltime_sport_embed(
+            combined,
+            "🏆 All Sports",
+            combined_starting_bankroll,
+        )
+    )
 
     for sport, summary in sorted(active_summaries.items()):
         emoji = SPORT_EMOJI.get(sport.upper(), "")

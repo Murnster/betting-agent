@@ -502,6 +502,9 @@ def test_send_alltime_sends_header_plus_sport_embeds(mock_send, monkeypatch):
     assert embeds[0]["title"] == "All-Time Results"
     assert embeds[0]["color"] == COLOR_BLUE
     assert "All Sports" in embeds[1]["title"]
+    assert "$2,000.00" in embeds[1]["description"]
+    assert "$2,180.00" in embeds[1]["description"]
+    assert "ROI:** +9.00%" in embeds[1]["description"]
 
 
 @patch("betting_agent.notifications.discord._send_webhook")
@@ -544,4 +547,7 @@ def test_send_alltime_filters_out_empty_sports(mock_send, monkeypatch):
     embeds = mock_send.call_args_list[0][0][1]["embeds"]
     assert len(embeds) == 3
     assert "All Sports" in embeds[1]["title"]
+    assert "$1,000.00" in embeds[1]["description"]
+    assert "$980.00" in embeds[1]["description"]
+    assert "ROI:** -2.00%" in embeds[1]["description"]
     assert "NBA" in embeds[2]["title"]
