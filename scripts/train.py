@@ -16,6 +16,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import pandas as pd
 import xgboost as xgb
 
 from betting_agent.config import settings
@@ -69,6 +70,51 @@ def _extract_and_save_importance(
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
     logger.info("Feature importance saved to %s", out_path)
+
+
+def _write_calibration_report(
+    save_dir: Path,
+    raw_probs: np.ndarray,
+    cal_probs: np.ndarray,
+    y_true: np.ndarray,
+    calibrator,
+) -> None:
+    """Save calibration diagnostics for later inspection."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    percentiles = np.percentile(raw_probs, [0, 5, 25, 50, 75, 95, 100]).tolist()
+    cal_percentiles = np.percentile(cal_probs, [0, 5, 25, 50, 75, 95, 100]).tolist()
+
+    grid = np.linspace(0.0, 1.0, 101)
+    grid_cal = calibrator.predict(grid)
+    mapping = [{"raw": float(r), "cal": float(c)} for r, c in zip(grid, grid_cal)]
+
+    report = {
+        "n_samples": int(len(raw_probs)),
+        "calibrators": int(getattr(calibrator, "n_calibrators", 1)),
+        "raw_percentiles": percentiles,
+        "calibrated_percentiles": cal_percentiles,
+        "mapping": mapping,
+    }
+    with open(save_dir / "calibration_report.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+    bins = [(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01)]
+    rows = []
+    for lo, hi in bins:
+        mask = (cal_probs >= lo) & (cal_probs < hi)
+        if mask.sum() == 0:
+            continue
+        rows.append({
+            "bin_lo": lo,
+            "bin_hi": min(hi, 1.0),
+            "n": int(mask.sum()),
+            "pred_avg": float(cal_probs[mask].mean()),
+            "raw_avg": float(raw_probs[mask].mean()),
+            "actual_avg": float(np.mean(y_true[mask])),
+        })
+    if rows:
+        pd.DataFrame(rows).to_csv(save_dir / "calibration_bins.csv", index=False)
 
 
 def main() -> None:
@@ -155,10 +201,11 @@ def main() -> None:
     # ---- 3b. Post-training probability distribution check ----
     split_test = int(len(X) * 0.80)
     X_test_fold = X.iloc[split_test:]
+    y_test_fold = y_class.iloc[split_test:]
     dmat_test = xgb.DMatrix(X_test_fold, feature_names=list(X.columns))
     raw_test_probs = clf.predict(dmat_test)
-    cal_test_probs = calibrator.predict(raw_test_probs)
-    cal_test_probs = np.clip(cal_test_probs, 0.05, 0.95)
+    cal_test_probs_raw = calibrator.predict(raw_test_probs)
+    cal_test_probs = np.clip(cal_test_probs_raw, 0.05, 0.95)
 
     in_range = np.mean((cal_test_probs >= 0.25) & (cal_test_probs <= 0.75))
     logger.info("Calibrated prob distribution on test fold:")
@@ -172,6 +219,8 @@ def main() -> None:
             "WARNING: <50%% of calibrated probabilities fall in [0.25, 0.75] — "
             "model may still be overconfident"
         )
+
+    _write_calibration_report(save_dir, raw_test_probs, cal_test_probs_raw, y_test_fold.values, calibrator)
 
     # ---- 4. Train regression models ----
     y_home = y["home_score"].astype(float)

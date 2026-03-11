@@ -149,6 +149,88 @@ class TestUnderdogML:
         assert len(home_ml) == 1, "Should generate underdog ML pick with sufficient edge"
         assert home_ml[0].model_prob < 0.5, "This should be an underdog pick"
 
+    def test_nba_extreme_underdog_blocked(self):
+        """NBA tiered edge guardrail should block extreme underdogs."""
+        engine = _make_mock_engine(win_prob=0.25)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=900, away_ml=-1200)
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NBA",
+        )
+        home_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamA"]
+        assert len(home_ml) == 0, "Extreme NBA underdog ML should be filtered by guardrail"
+
+
+class TestMissingOdds:
+    def test_picks_with_missing_away_ml(self):
+        """Picks generate correctly when away ML odds are missing."""
+        engine = _make_mock_engine(win_prob=0.65)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        # Only home ML, no away ML — build odds with only h2h home side
+        odds = [{
+            "home_team": "TeamA",
+            "away_team": "TeamB",
+            "bookmakers": [{
+                "title": "TestBook",
+                "markets": [{
+                    "key": "h2h",
+                    "outcomes": [
+                        {"name": "TeamA", "price": 150},
+                    ],
+                }],
+            }],
+        }]
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NFL",
+        )
+        # Should not crash; may produce home ML pick but no away ML pick
+        away_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamB"]
+        assert len(away_ml) == 0, "Should not generate away ML pick when away odds are missing"
+
+    def test_picks_with_missing_home_ml(self):
+        """Picks generate correctly when home ML odds are missing."""
+        engine = _make_mock_engine(win_prob=0.35)  # away team favored
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = [{
+            "home_team": "TeamA",
+            "away_team": "TeamB",
+            "bookmakers": [{
+                "title": "TestBook",
+                "markets": [{
+                    "key": "h2h",
+                    "outcomes": [
+                        {"name": "TeamB", "price": 150},
+                    ],
+                }],
+            }],
+        }]
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NFL",
+        )
+        home_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamA"]
+        assert len(home_ml) == 0, "Should not generate home ML pick when home odds are missing"
+
 
 class TestScoringSimga:
     def test_sigma_passed_to_edge_calcs(self):

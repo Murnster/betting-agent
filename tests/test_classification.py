@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from unittest.mock import MagicMock
 
 from betting_agent.models.classification import (
+    IsotonicEnsemble,
     _log_calibration_diagnostics,
     train_calibrated_classifier,
 )
@@ -30,7 +31,8 @@ def _make_synthetic_data(n: int = 100, seed: int = 42):
 def test_train_returns_isotonic_calibrator():
     X, y = _make_synthetic_data(200)
     model, calibrator = train_calibrated_classifier(X, y, verbose=False)
-    assert isinstance(calibrator, IsotonicRegression)
+    assert isinstance(calibrator, IsotonicEnsemble)
+    assert calibrator.n_calibrators >= 1
 
 
 def test_calibrated_probs_in_range():
@@ -107,6 +109,37 @@ def test_engine_handles_logistic_calibrator():
     assert len(probs) == 2
     assert np.all(probs >= 0.05)
     assert np.all(probs <= 0.95)
+
+
+def test_write_calibration_report(tmp_path):
+    """_write_calibration_report writes JSON report and CSV bins."""
+    from scripts.train import _write_calibration_report
+
+    rng = np.random.RandomState(42)
+    raw_probs = rng.rand(100).astype(np.float64)
+    cal_probs = rng.rand(100).astype(np.float64)
+    y_true = rng.randint(0, 2, 100).astype(np.float64)
+
+    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    calibrator.fit(np.linspace(0, 1, 50), np.linspace(0, 1, 50))
+
+    _write_calibration_report(tmp_path, raw_probs, cal_probs, y_true, calibrator)
+
+    import json
+    report_path = tmp_path / "calibration_report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    assert report["n_samples"] == 100
+    assert "raw_percentiles" in report
+    assert "calibrated_percentiles" in report
+    assert len(report["mapping"]) == 101  # 0.0 to 1.0 in 101 steps
+
+    bins_path = tmp_path / "calibration_bins.csv"
+    assert bins_path.exists()
+    bins_df = pd.read_csv(bins_path)
+    assert "pred_avg" in bins_df.columns
+    assert "actual_avg" in bins_df.columns
+    assert len(bins_df) > 0
 
 
 def test_probability_clipping():

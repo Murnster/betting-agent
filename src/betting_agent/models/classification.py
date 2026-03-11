@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import accuracy_score, brier_score_loss, classification_report, log_loss
 
@@ -106,30 +107,46 @@ def _log_calibration_diagnostics(
         )
 
 
+class IsotonicEnsemble(BaseEstimator, RegressorMixin):
+    """Average of multiple isotonic calibrators (for smoother tails)."""
+
+    def __init__(self, calibrators: list[IsotonicRegression]) -> None:
+        if not calibrators:
+            raise ValueError("IsotonicEnsemble requires at least one calibrator")
+        self.calibrators = calibrators
+
+    @property
+    def n_calibrators(self) -> int:
+        return len(self.calibrators)
+
+    def predict(self, probs: np.ndarray) -> np.ndarray:
+        preds = [cal.predict(probs) for cal in self.calibrators]
+        return np.mean(np.vstack(preds), axis=0)
+
+
 def train_calibrated_classifier(
     X: pd.DataFrame,
     y: pd.Series,
     verbose: bool = True,
-) -> tuple[xgb.Booster, IsotonicRegression]:
+    k_folds: int = 5,
+) -> tuple[xgb.Booster, IsotonicEnsemble]:
     """
-    Train XGBoost classifier with isotonic regression calibration on a held-out fold.
+    Train XGBoost classifier with k-fold isotonic calibration.
 
-    Uses a 50/30/20 chronological split: train / calibration / test.
-    Returns (booster, calibrator) — save calibrator alongside the model.
+    Uses an 80/20 chronological split: train+calibration / test.
+    Fit k isotonic calibrators on expanding time-series folds within the 80%.
+    Returns (booster, calibrator_ensemble) — save calibrator alongside the model.
     """
-    # 50/30/20 chronological split
     n = len(X)
-    split_train = int(n * 0.50)
-    split_cal = int(n * 0.80)
-    X_train, X_cal, X_test = X.iloc[:split_train], X.iloc[split_train:split_cal], X.iloc[split_cal:]
-    y_train, y_cal, y_test = y.iloc[:split_train], y.iloc[split_train:split_cal], y.iloc[split_cal:]
+    split_test = int(n * 0.80)
+    X_traincal, X_test = X.iloc[:split_test], X.iloc[split_test:]
+    y_traincal, y_test = y.iloc[:split_test], y.iloc[split_test:]
 
-    scale_pos_weight = len(y_train[y_train == 0]) / max(len(y_train[y_train == 1]), 1)
+    scale_pos_weight = len(y_traincal[y_traincal == 0]) / max(len(y_traincal[y_traincal == 1]), 1)
     params = {**PARAMS, "scale_pos_weight": scale_pos_weight}
 
-    dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=list(X.columns))
+    dtrain = xgb.DMatrix(X_traincal, label=y_traincal, feature_names=list(X.columns))
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=list(X.columns))
-    dcal = xgb.DMatrix(X_cal, label=y_cal, feature_names=list(X.columns))
 
     callbacks = []
     if EARLY_STOPPING:
@@ -144,28 +161,71 @@ def train_calibrated_classifier(
         callbacks=callbacks,
     )
 
-    # Fit isotonic regression calibrator on calibration fold
-    cal_probs_raw = model.predict(dcal)
-    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
-    calibrator.fit(cal_probs_raw, y_cal.values)
+    # K-fold time-series isotonic calibration on train+cal split
+    calibrators: list[IsotonicRegression] = []
+    n_traincal = len(X_traincal)
+    
+    # Start calibration after 20% of data, but ensure meaningful split for small datasets
+    if n_traincal < 100:
+        min_train = max(int(n_traincal * 0.80), 1)
+    else:
+        min_train = max(50, int(n_traincal * 0.20))
+    
+    min_train = min(min_train, max(n_traincal - 1, 1))
+    remaining = n_traincal - min_train
+
+    if remaining < k_folds:
+        k_folds = max(1, remaining)
+    fold_size = max(1, remaining // max(k_folds, 1))
+
+    for i in range(k_folds):
+        cal_start = min_train + i * fold_size
+        if cal_start >= n_traincal:
+            break
+        cal_end = n_traincal if i == k_folds - 1 else min(n_traincal, cal_start + fold_size)
+        if cal_end <= cal_start:
+            continue
+
+        X_fold_train = X_traincal.iloc[:cal_start]
+        y_fold_train = y_traincal.iloc[:cal_start]
+        X_fold_cal = X_traincal.iloc[cal_start:cal_end]
+        y_fold_cal = y_traincal.iloc[cal_start:cal_end]
+
+        if len(X_fold_train) == 0 or len(X_fold_cal) == 0:
+            continue
+
+        d_fold_train = xgb.DMatrix(X_fold_train, label=y_fold_train, feature_names=list(X.columns))
+        d_fold_cal = xgb.DMatrix(X_fold_cal, label=y_fold_cal, feature_names=list(X.columns))
+
+        fold_model = xgb.train(
+            params,
+            d_fold_train,
+            num_boost_round=NUM_ROUNDS,
+            evals=[(d_fold_train, "train")],
+            verbose_eval=False,
+        )
+        cal_probs_raw = fold_model.predict(d_fold_cal)
+        calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+        calibrator.fit(cal_probs_raw, y_fold_cal.values)
+        calibrators.append(calibrator)
+
+    if not calibrators:
+        raise RuntimeError("No calibrators trained; insufficient data for k-fold calibration")
 
     # Evaluate on test set using calibrated probabilities
     test_probs_raw = model.predict(dtest)
-    test_probs_cal = calibrator.predict(test_probs_raw)
+    calibrator_ensemble = IsotonicEnsemble(calibrators)
+    test_probs_cal = calibrator_ensemble.predict(test_probs_raw)
     y_pred = (test_probs_cal > 0.5).astype(int)
     acc = accuracy_score(y_test, y_pred)
     if verbose:
         logger.info("Calibrated classification test accuracy: %.4f", acc)
         logger.info("\n%s", classification_report(y_test, y_pred))
 
-        # Log calibration diagnostics on calibration fold (in-sample)
-        cal_probs_cal = calibrator.predict(cal_probs_raw)
-        _log_calibration_diagnostics(y_cal.values, cal_probs_raw, cal_probs_cal, label="calibration (in-sample)")
-
         # Log calibration diagnostics on test fold (out-of-sample)
         _log_calibration_diagnostics(y_test.values, test_probs_raw, test_probs_cal, label="test (out-of-sample)")
 
-    return model, calibrator
+    return model, calibrator_ensemble
 
 
 def train_final_classifier(X: pd.DataFrame, y: pd.Series) -> xgb.Booster:
