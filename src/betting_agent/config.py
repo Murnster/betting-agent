@@ -63,6 +63,7 @@ class Settings(BaseSettings):
 
     # NHL API
     nhl_api_rate_limit: float = Field(default=0.5, description="Seconds between nhlpy calls")
+    nhl_api_concurrency: int = Field(default=10, description="ThreadPoolExecutor workers for NHL API calls")
 
     # MLB API
     mlb_api_rate_limit: float = Field(default=0.5, description="Seconds between mlbstatsapi calls")

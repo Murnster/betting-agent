@@ -197,12 +197,17 @@ def train_calibrated_classifier(
         d_fold_train = xgb.DMatrix(X_fold_train, label=y_fold_train, feature_names=list(X.columns))
         d_fold_cal = xgb.DMatrix(X_fold_cal, label=y_fold_cal, feature_names=list(X.columns))
 
+        fold_callbacks = []
+        if EARLY_STOPPING:
+            fold_callbacks.append(xgb.callback.EarlyStopping(rounds=EARLY_STOPPING))
+
         fold_model = xgb.train(
             params,
             d_fold_train,
             num_boost_round=NUM_ROUNDS,
-            evals=[(d_fold_train, "train")],
+            evals=[(d_fold_train, "train"), (d_fold_cal, "cal")],
             verbose_eval=False,
+            callbacks=fold_callbacks,
         )
         cal_probs_raw = fold_model.predict(d_fold_cal)
         calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
