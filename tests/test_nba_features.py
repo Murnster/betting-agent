@@ -99,6 +99,27 @@ class TestBuildNbaFeatures:
                      "cross_conference", "same_division"]:
             assert col in result.columns, f"Missing NBA column: {col}"
 
+    def test_nba_quality_and_diff_columns_exist(self):
+        df = _make_synthetic_schedule(50)
+        result = build_nba_features(df)
+        expected = [
+            "home_win_pct_season",
+            "away_win_pct_season",
+            "home_win_pct_10g",
+            "away_win_pct_10g",
+            "home_opp_elo_10g",
+            "away_opp_elo_10g",
+            "elo_diff",
+            "recent_elo_diff",
+            "playoff_elo_diff",
+            "avg_scored_diff_3g",
+            "avg_allowed_diff_3g",
+            "ortg_diff_5g",
+            "drtg_diff_10g",
+        ]
+        for col in expected:
+            assert col in result.columns, f"Missing NBA quality/diff column: {col}"
+
     def test_no_weather_columns(self):
         df = _make_synthetic_schedule(50)
         result = build_nba_features(df)

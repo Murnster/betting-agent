@@ -149,6 +149,24 @@ class TestUnderdogML:
         assert len(home_ml) == 1, "Should generate underdog ML pick with sufficient edge"
         assert home_ml[0].model_prob < 0.5, "This should be an underdog pick"
 
+    def test_nba_extreme_underdog_blocked(self):
+        """NBA tiered edge guardrail should block extreme underdogs."""
+        engine = _make_mock_engine(win_prob=0.25)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=900, away_ml=-1200)
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NBA",
+        )
+        home_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamA"]
+        assert len(home_ml) == 0, "Extreme NBA underdog ML should be filtered by guardrail"
+
 
 class TestScoringSimga:
     def test_sigma_passed_to_edge_calcs(self):

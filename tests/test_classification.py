@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from unittest.mock import MagicMock
 
 from betting_agent.models.classification import (
+    IsotonicEnsemble,
     _log_calibration_diagnostics,
     train_calibrated_classifier,
 )
@@ -30,7 +31,8 @@ def _make_synthetic_data(n: int = 100, seed: int = 42):
 def test_train_returns_isotonic_calibrator():
     X, y = _make_synthetic_data(200)
     model, calibrator = train_calibrated_classifier(X, y, verbose=False)
-    assert isinstance(calibrator, IsotonicRegression)
+    assert isinstance(calibrator, IsotonicEnsemble)
+    assert calibrator.n_calibrators >= 1
 
 
 def test_calibrated_probs_in_range():

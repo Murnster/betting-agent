@@ -170,6 +170,136 @@ def compute_nba_advanced_rolling(
     return df
 
 
+def compute_nba_team_quality(
+    df: pd.DataFrame, windows: list[int] | None = None,
+) -> pd.DataFrame:
+    """
+    Compute win% and strength-of-schedule rolling features for NBA teams.
+
+    Produces win% over season-to-date, last-N games, and rolling opponent Elo.
+    """
+    if windows is None:
+        windows = [10, 20]
+
+    df = df.copy().sort_values("game_date").reset_index(drop=True)
+
+    for side in ("home", "away"):
+        df[f"{side}_win_pct_season"] = np.nan
+        for w in windows:
+            df[f"{side}_win_pct_{w}g"] = np.nan
+            df[f"{side}_opp_elo_{w}g"] = np.nan
+
+    # Per-team state (reset by season)
+    results: dict[str, list[float]] = {}
+    opp_elos: dict[str, list[float]] = {}
+    season_wins: dict[str, int] = {}
+    season_games: dict[str, int] = {}
+    season_tracker: dict[str, int] = {}
+
+    for idx, row in df.iterrows():
+        season = int(row.get("season", 0)) if not pd.isna(row.get("season")) else 0
+
+        for side, team, opp_elo in [
+            ("home", row.get("home_team"), row.get("away_elo")),
+            ("away", row.get("away_team"), row.get("home_elo")),
+        ]:
+            if team is None:
+                continue
+            team = str(team)
+            if season_tracker.get(team) != season:
+                season_tracker[team] = season
+                results[team] = []
+                opp_elos[team] = []
+                season_wins[team] = 0
+                season_games[team] = 0
+
+            if season_games[team] > 0:
+                df.at[idx, f"{side}_win_pct_season"] = season_wins[team] / max(1, season_games[team])
+
+            for w in windows:
+                recent = results[team][-w:]
+                if recent:
+                    df.at[idx, f"{side}_win_pct_{w}g"] = float(np.mean(recent))
+
+                opp_recent = opp_elos[team][-w:]
+                if opp_recent:
+                    df.at[idx, f"{side}_opp_elo_{w}g"] = float(np.mean(opp_recent))
+
+        # Update histories after outcomes are known
+        h_score = row.get("home_score")
+        a_score = row.get("away_score")
+        if pd.isna(h_score) or pd.isna(a_score):
+            continue
+
+        home = str(row.get("home_team"))
+        away = str(row.get("away_team"))
+
+        if float(h_score) > float(a_score):
+            home_res, away_res = 1.0, 0.0
+        elif float(h_score) < float(a_score):
+            home_res, away_res = 0.0, 1.0
+        else:
+            home_res = away_res = 0.5
+
+        results.setdefault(home, []).append(home_res)
+        results.setdefault(away, []).append(away_res)
+        season_wins[home] = season_wins.get(home, 0) + int(home_res == 1.0)
+        season_wins[away] = season_wins.get(away, 0) + int(away_res == 1.0)
+        season_games[home] = season_games.get(home, 0) + 1
+        season_games[away] = season_games.get(away, 0) + 1
+
+        home_opp_elo = row.get("away_elo")
+        away_opp_elo = row.get("home_elo")
+        if home_opp_elo is not None and not pd.isna(home_opp_elo):
+            opp_elos.setdefault(home, []).append(float(home_opp_elo))
+        if away_opp_elo is not None and not pd.isna(away_opp_elo):
+            opp_elos.setdefault(away, []).append(float(away_opp_elo))
+
+    return df
+
+
+def add_nba_differentials(
+    df: pd.DataFrame, windows: list[int] | None = None,
+) -> pd.DataFrame:
+    """Add home-away differential features for team strength signals."""
+    if windows is None:
+        windows = [3, 5, 10]
+
+    df = df.copy()
+
+    # Elo-based differentials
+    for col, name in [
+        ("elo", "elo_diff"),
+        ("recent_elo", "recent_elo_diff"),
+        ("playoff_elo", "playoff_elo_diff"),
+    ]:
+        h = f"home_{col}"
+        a = f"away_{col}"
+        if h in df.columns and a in df.columns:
+            df[name] = df[h] - df[a]
+
+    # Rolling score differentials
+    for w in windows:
+        h_scored = f"home_avg_scored_{w}g"
+        a_scored = f"away_avg_scored_{w}g"
+        h_allowed = f"home_avg_allowed_{w}g"
+        a_allowed = f"away_avg_allowed_{w}g"
+        if h_scored in df.columns and a_scored in df.columns:
+            df[f"avg_scored_diff_{w}g"] = df[h_scored] - df[a_scored]
+        if h_allowed in df.columns and a_allowed in df.columns:
+            df[f"avg_allowed_diff_{w}g"] = df[h_allowed] - df[a_allowed]
+
+    # Advanced stats differentials
+    for w in windows:
+        for stat in _ADVANCED_STATS:
+            h_col = f"home_{stat}_{w}g"
+            a_col = f"away_{stat}_{w}g"
+            if h_col in df.columns and a_col in df.columns:
+                df[f"{stat}_diff_{w}g"] = df[h_col] - df[a_col]
+
+    return df
+
+
 def normalise_nba_schedules(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ensure canonical columns exist for build_nba_features().
@@ -221,6 +351,8 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
     df["head_to_head"] = calculate_head_to_head(df)
     df = add_rest_days(df)
     df = calculate_elo_ratings(df)
+    df = compute_nba_team_quality(df, windows=[10, 20])
+    df = add_nba_differentials(df, windows=[3, 5, 10])
 
     # ---- Spread-derived home_is_favorite ----
     if "home_is_favorite" not in df.columns:

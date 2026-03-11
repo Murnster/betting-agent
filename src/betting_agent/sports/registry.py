@@ -30,6 +30,8 @@ class SportConfig:
     scoring_sigma: float = 14.0  # scoring variance for spread/total normal approx
     star_thresholds: tuple[float, float, float, float] = (0.04, 0.07, 0.12, 0.20)
     # (2-star, 3-star, 4-star, 5-star edge minimums)
+    ml_edge_tiers: list[tuple[float, float]] | None = None
+    # List of (implied_prob_max, min_edge) for ML guardrails
 
 
 def _get_registry() -> dict[str, SportConfig]:
@@ -83,6 +85,11 @@ def _get_registry() -> dict[str, SportConfig]:
             total_stdev=15.0,
             scoring_sigma=11.5,
             star_thresholds=(0.08, 0.15, 0.25, 0.35),
+            ml_edge_tiers=[
+                (0.12, 0.35),
+                (0.20, 0.20),
+                (0.30, 0.10),
+            ],
         ),
         "NHL": SportConfig(
             loader_cls=NHLLoader,

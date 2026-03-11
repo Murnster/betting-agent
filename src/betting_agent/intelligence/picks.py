@@ -23,6 +23,7 @@ from betting_agent.intelligence.ev import (
 )
 from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.models.engine import PredictionEngine
+from betting_agent.sports.registry import get_sport_config
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,17 @@ def generate_picks(
     if pick_date is None:
         pick_date = date.today()
 
+    sport_config = get_sport_config(sport)
+
+    def _ml_min_edge(implied_prob: float) -> float:
+        tiers = sport_config.ml_edge_tiers
+        if not tiers:
+            return settings.min_edge_pct
+        for prob_max, min_edge in sorted(tiers, key=lambda x: x[0]):
+            if implied_prob < prob_max:
+                return max(min_edge, settings.min_edge_pct)
+        return settings.min_edge_pct
+
     # Run predictions
     predictions = engine.predict(features)
     candidates: list[BetCandidate] = []
@@ -114,8 +126,12 @@ def generate_picks(
             else:
                 edge = calculate_edge(win_prob, ml_home)
             edge += _sent_adj(home)
-            if edge >= settings.min_edge_pct:
+            if ml_home:
                 implied = american_to_implied_prob(ml_home)
+            else:
+                implied = 0.0
+            min_edge = _ml_min_edge(implied)
+            if edge >= min_edge:
                 kf, bet = recommended_bet(win_prob, ml_home, edge, bankroll)
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
@@ -133,8 +149,12 @@ def generate_picks(
             else:
                 edge = calculate_edge(away_win_prob, ml_away)
             edge += _sent_adj(away)
-            if edge >= settings.min_edge_pct:
+            if ml_away:
                 implied = american_to_implied_prob(ml_away)
+            else:
+                implied = 0.0
+            min_edge = _ml_min_edge(implied)
+            if edge >= min_edge:
                 kf, bet = recommended_bet(away_win_prob, ml_away, edge, bankroll)
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
