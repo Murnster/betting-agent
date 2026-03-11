@@ -126,10 +126,7 @@ def generate_picks(
             else:
                 edge = calculate_edge(win_prob, ml_home)
             edge += _sent_adj(home)
-            if ml_home:
-                implied = american_to_implied_prob(ml_home)
-            else:
-                implied = 0.0
+            implied = american_to_implied_prob(ml_home)
             min_edge = _ml_min_edge(implied)
             if edge >= min_edge:
                 kf, bet = recommended_bet(win_prob, ml_home, edge, bankroll)
@@ -149,10 +146,7 @@ def generate_picks(
             else:
                 edge = calculate_edge(away_win_prob, ml_away)
             edge += _sent_adj(away)
-            if ml_away:
-                implied = american_to_implied_prob(ml_away)
-            else:
-                implied = 0.0
+            implied = american_to_implied_prob(ml_away)
             min_edge = _ml_min_edge(implied)
             if edge >= min_edge:
                 kf, bet = recommended_bet(away_win_prob, ml_away, edge, bankroll)
