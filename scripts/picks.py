@@ -282,6 +282,7 @@ def main() -> None:
         sentiment_scores=sentiment_scores,
         total_sigma=sigma["total_sigma"],
         margin_sigma=sigma["margin_sigma"],
+        max_picks=settings.max_picks_per_run,
     )
 
     agent_summary: dict | None = None

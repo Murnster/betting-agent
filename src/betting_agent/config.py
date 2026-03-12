@@ -9,7 +9,8 @@ from pydantic import Field
 
 # Load .env into os.environ so dynamic lookups (e.g. Discord webhook URLs
 # resolved by sport name) see these values too — not just pydantic fields.
-load_dotenv(override=False)
+# Preserve standard precedence: explicitly exported environment variables win.
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -51,6 +52,7 @@ class Settings(BaseSettings):
     max_bet_pct: float = Field(default=0.07, description="Max % of bankroll per bet")
     min_bet_pct: float = Field(default=0.0, description="Min % of bankroll per bet")
     starting_bankroll: float = Field(default=100.0, description="Default starting bankroll")
+    max_picks_per_run: int = Field(default=3, description="Maximum picks to return per sport run")
     sentiment_weight: float = Field(default=0.02, description="Max sentiment edge adjustment")
 
     # Model thresholds
@@ -107,6 +109,12 @@ class Settings(BaseSettings):
     )
     agent_request_timeout: int = Field(
         default=20, description="Validator API request timeout in seconds"
+    )
+    agent_request_retries: int = Field(
+        default=2, description="Number of retries for transient validator API failures"
+    )
+    agent_request_retry_backoff_seconds: float = Field(
+        default=1.0, description="Base backoff in seconds between validator retries"
     )
 
     # Paths

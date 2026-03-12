@@ -7,8 +7,10 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
+from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.intelligence.picks import (
     BetCandidate,
+    _candidate_game_key,
     _extract_team_from_pick,
     format_picks_cli,
     generate_picks,
@@ -129,6 +131,421 @@ class TestCorrelationAdjustment:
             for c in candidates:
                 assert c.kelly_fraction >= 0.0
                 assert c.recommended_bet >= 0.0
+
+    def test_multiple_upcoming_games_do_not_collapse_under_game_id_zero(self):
+        """Upcoming games with string external_ids should dedupe and scale independently."""
+        engine = MagicMock()
+        engine.predict.return_value = pd.DataFrame(
+            {
+                "win_prob": [0.60, 0.40],
+                "home_pred_score": [27.0, 20.0],
+                "away_pred_score": [20.0, 24.0],
+                "pred_total": [47.0, 44.0],
+                "pred_margin": [7.0, -4.0],
+            }
+        )
+        features = pd.DataFrame({"col1": [1.0, 2.0]})
+        metadata = pd.DataFrame(
+            {
+                "game_id": ["game-a", "game-b"],
+                "external_id": ["game-a", "game-b"],
+                "game_date": ["2026-01-16", "2026-01-16"],
+                "home_team": ["TeamA", "TeamC"],
+                "away_team": ["TeamB", "TeamD"],
+                "home_team_odds": ["TeamA", "TeamC"],
+                "away_team_odds": ["TeamB", "TeamD"],
+            }
+        )
+        odds = [
+            {
+                "home_team": "TeamA",
+                "away_team": "TeamB",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamA", "price": 130},
+                                    {"name": "TeamB", "price": -150},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 42.5},
+                                    {"name": "Under", "price": -110, "point": 42.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "home_team": "TeamC",
+                "away_team": "TeamD",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamC", "price": -145},
+                                    {"name": "TeamD", "price": 125},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 39.5},
+                                    {"name": "Under", "price": -110, "point": 39.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        combined = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=None,
+        )
+        first_game = generate_picks(
+            features.iloc[[0]].reset_index(drop=True),
+            metadata.iloc[[0]].reset_index(drop=True),
+            odds[:1],
+            _make_mock_engine(win_prob=0.60, home_score=27.0, away_score=20.0),
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=None,
+        )
+        second_game = generate_picks(
+            features.iloc[[1]].reset_index(drop=True),
+            metadata.iloc[[1]].reset_index(drop=True),
+            odds[1:],
+            _make_mock_engine(win_prob=0.40, home_score=20.0, away_score=24.0),
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=None,
+        )
+
+        assert {(c.external_id, c.bet_type) for c in combined} == {
+            ("game-a", "moneyline"),
+            ("game-a", "total"),
+            ("game-b", "moneyline"),
+            ("game-b", "total"),
+        }
+        assert {_candidate_game_key(c) for c in combined} == {"game-a", "game-b"}
+
+        combined_map = {(c.external_id, c.bet_type, c.pick_side): c for c in combined}
+        solo_map = {
+            (c.external_id, c.bet_type, c.pick_side): c for c in (first_game + second_game)
+        }
+        assert combined_map.keys() == solo_map.keys()
+        for key in combined_map:
+            assert combined_map[key].recommended_bet == solo_map[key].recommended_bet
+            assert combined_map[key].kelly_fraction == solo_map[key].kelly_fraction
+
+    def test_null_external_ids_fall_back_to_team_date_game_keys(self):
+        """Missing external IDs should not collapse unrelated games under one fake key."""
+        engine = MagicMock()
+        engine.predict.return_value = pd.DataFrame(
+            {
+                "win_prob": [0.60, 0.40],
+                "home_pred_score": [27.0, 20.0],
+                "away_pred_score": [20.0, 24.0],
+                "pred_total": [47.0, 44.0],
+                "pred_margin": [7.0, -4.0],
+            }
+        )
+        features = pd.DataFrame({"col1": [1.0, 2.0]})
+        metadata = pd.DataFrame(
+            {
+                "game_id": [0, 0],
+                "external_id": [pd.NA, pd.NA],
+                "game_date": ["2026-01-16", "2026-01-16"],
+                "home_team": ["TeamA", "TeamC"],
+                "away_team": ["TeamB", "TeamD"],
+                "home_team_odds": ["TeamA", "TeamC"],
+                "away_team_odds": ["TeamB", "TeamD"],
+            }
+        )
+        odds = [
+            {
+                "home_team": "TeamA",
+                "away_team": "TeamB",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamA", "price": 130},
+                                    {"name": "TeamB", "price": -150},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 42.5},
+                                    {"name": "Under", "price": -110, "point": 42.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "home_team": "TeamC",
+                "away_team": "TeamD",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamC", "price": -145},
+                                    {"name": "TeamD", "price": 125},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 39.5},
+                                    {"name": "Under", "price": -110, "point": 39.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        candidates = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=None,
+        )
+
+        keys = {_candidate_game_key(candidate) for candidate in candidates}
+        assert len(keys) == 2
+        assert keys == {"TeamB@TeamA:2026-01-16", "TeamD@TeamC:2026-01-16"}
+        assert all(candidate.external_id is None for candidate in candidates)
+
+    def test_max_picks_caps_slate_after_sorting(self):
+        """Top-level slate cap should keep only the highest-edge picks."""
+        engine = MagicMock()
+        engine.predict.return_value = pd.DataFrame(
+            {
+                "win_prob": [0.60, 0.40],
+                "home_pred_score": [27.0, 20.0],
+                "away_pred_score": [20.0, 24.0],
+                "pred_total": [47.0, 44.0],
+                "pred_margin": [7.0, -4.0],
+            }
+        )
+        features = pd.DataFrame({"col1": [1.0, 2.0]})
+        metadata = pd.DataFrame(
+            {
+                "game_id": ["game-a", "game-b"],
+                "external_id": ["game-a", "game-b"],
+                "game_date": ["2026-01-16", "2026-01-16"],
+                "home_team": ["TeamA", "TeamC"],
+                "away_team": ["TeamB", "TeamD"],
+                "home_team_odds": ["TeamA", "TeamC"],
+                "away_team_odds": ["TeamB", "TeamD"],
+            }
+        )
+        odds = [
+            {
+                "home_team": "TeamA",
+                "away_team": "TeamB",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamA", "price": 130},
+                                    {"name": "TeamB", "price": -150},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 42.5},
+                                    {"name": "Under", "price": -110, "point": 42.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "home_team": "TeamC",
+                "away_team": "TeamD",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamC", "price": -145},
+                                    {"name": "TeamD", "price": 125},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 39.5},
+                                    {"name": "Under", "price": -110, "point": 39.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        candidates = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=3,
+        )
+
+        assert len(candidates) == 3
+        assert [c.edge for c in candidates] == sorted((c.edge for c in candidates), reverse=True)
+
+    def test_max_picks_applies_before_same_game_kelly_scaling(self):
+        """A surviving top pick should not keep a haircut from a discarded same-game sibling."""
+        engine = MagicMock()
+        engine.predict.return_value = pd.DataFrame(
+            {
+                "win_prob": [0.70, 0.53],
+                "home_pred_score": [30.0, 24.0],
+                "away_pred_score": [20.0, 21.0],
+                "pred_total": [50.0, 45.0],
+                "pred_margin": [10.0, 3.0],
+            }
+        )
+        features = pd.DataFrame({"col1": [1.0, 2.0]})
+        metadata = pd.DataFrame(
+            {
+                "game_id": ["game-a", "game-b"],
+                "external_id": ["game-a", "game-b"],
+                "game_date": ["2026-01-16", "2026-01-16"],
+                "home_team": ["TeamA", "TeamC"],
+                "away_team": ["TeamB", "TeamD"],
+                "home_team_odds": ["TeamA", "TeamC"],
+                "away_team_odds": ["TeamB", "TeamD"],
+            }
+        )
+        odds = [
+            {
+                "home_team": "TeamA",
+                "away_team": "TeamB",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamA", "price": 150},
+                                    {"name": "TeamB", "price": -180},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 35.0},
+                                    {"name": "Under", "price": -110, "point": 35.0},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "home_team": "TeamC",
+                "away_team": "TeamD",
+                "bookmakers": [
+                    {
+                        "title": "TestBook",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "TeamC", "price": -110},
+                                    {"name": "TeamD", "price": -110},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "price": -110, "point": 43.5},
+                                    {"name": "Under", "price": -110, "point": 43.5},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        uncapped = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=None,
+        )
+        candidates = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            max_picks=1,
+        )
+
+        assert len(candidates) == 1
+        assert sum(1 for candidate in uncapped if candidate.external_id == "game-a") > 1
+
+        top_pick = candidates[0]
+        expected_kelly, expected_bet = recommended_bet(
+            top_pick.model_prob,
+            top_pick.odds,
+            top_pick.edge,
+            top_pick.bankroll_at_pick,
+        )
+
+        assert top_pick.external_id == "game-a"
+        assert top_pick.kelly_fraction == expected_kelly
+        assert top_pick.recommended_bet == expected_bet
 
 
 class TestUnderdogML:

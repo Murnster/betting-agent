@@ -70,6 +70,7 @@ def generate_picks(
     sentiment_scores: dict[str, float] | None = None,
     total_sigma: float = 14.0,
     margin_sigma: float = 14.0,
+    max_picks: int | None = None,
 ) -> list[BetCandidate]:
     """
     Main pick generation pipeline.
@@ -108,7 +109,7 @@ def generate_picks(
             game_id = int(raw_game_id)
         except (TypeError, ValueError):
             game_id = 0
-        external_id = str(meta.get("external_id", "")) or None
+        external_id = _normalize_external_id(meta.get("external_id"))
         home = str(meta.get("home_team", ""))
         away = str(meta.get("away_team", ""))
         scheduled_game_date = _coerce_game_date(
@@ -239,42 +240,35 @@ def generate_picks(
                     extra={"total_line": total_line},
                 ))
 
-    # Dedup: keep only highest-edge candidate per (game_id, bet_type)
-    seen: dict[tuple[int, str], BetCandidate] = {}
+    # Dedup per actual game, not the temporary integer game_id placeholder used
+    # before Odds API external IDs are resolved into DB ids.
+    seen: dict[tuple[str, str], BetCandidate] = {}
     for c in candidates:
-        key = (c.game_id, c.bet_type)
+        key = (_candidate_game_key(c), c.bet_type)
         if key not in seen or c.edge > seen[key].edge:
             seen[key] = c
     candidates = list(seen.values())
 
     # Dedup correlated ML/spread: when both exist for the same team
     # in the same game, keep only the higher-edge pick.
-    team_bets: dict[tuple[int, str], BetCandidate] = {}
+    team_bets: dict[tuple[str, str], BetCandidate] = {}
     uncorrelated: list[BetCandidate] = []
     for c in candidates:
         team = _extract_team_from_pick(c)
         if team is None:
             uncorrelated.append(c)
             continue
-        key = (c.game_id, team)
+        key = (_candidate_game_key(c), team)
         if key not in team_bets or c.edge > team_bets[key].edge:
             team_bets[key] = c
     candidates = uncorrelated + list(team_bets.values())
 
-    # Same-game correlation adjustment: scale Kelly down by 1/sqrt(n)
-    # where n = number of bets on the same game
-    from collections import Counter
-    import math
-    game_counts = Counter(c.game_id for c in candidates)
-    for c in candidates:
-        n = game_counts[c.game_id]
-        if n > 1:
-            corr_factor = 1.0 / math.sqrt(n)
-            c.kelly_fraction *= corr_factor
-            c.recommended_bet *= corr_factor
-
     # Sort by edge descending
     candidates.sort(key=lambda c: c.edge, reverse=True)
+    if max_picks is not None and max_picks > 0:
+        candidates = candidates[:max_picks]
+
+    _apply_same_game_correlation_adjustment(candidates)
     return candidates
 
 
@@ -289,6 +283,45 @@ def _extract_team_from_pick(candidate: BetCandidate) -> str | None:
         # Strip the spread number, e.g. "Buffalo Bills +1.5" → "Buffalo Bills"
         return candidate.pick_side.rsplit(" ", 1)[0]
     return None
+
+
+def _candidate_game_key(candidate: BetCandidate) -> str:
+    external_id = _normalize_external_id(candidate.external_id)
+    if external_id:
+        return external_id
+    if candidate.game_id:
+        return str(candidate.game_id)
+    return f"{candidate.away_team}@{candidate.home_team}:{candidate.event_date.isoformat()}"
+
+
+def _normalize_external_id(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+
+    text = str(value).strip()
+    if not text or text.lower() in {"<na>", "nan", "nat", "none", "null"}:
+        return None
+    return text
+
+
+def _apply_same_game_correlation_adjustment(candidates: list[BetCandidate]) -> None:
+    # Scale Kelly down only across the final returned slate.
+    from collections import Counter
+    import math
+
+    game_counts = Counter(_candidate_game_key(candidate) for candidate in candidates)
+    for candidate in candidates:
+        count = game_counts[_candidate_game_key(candidate)]
+        if count <= 1:
+            continue
+        corr_factor = 1.0 / math.sqrt(count)
+        candidate.kelly_fraction *= corr_factor
+        candidate.recommended_bet *= corr_factor
 
 
 def _coerce_game_date(value, fallback: date) -> date:
@@ -316,13 +349,15 @@ def _resolve_game_id(session, candidate: BetCandidate) -> int:
             return candidate.game_id
 
     # Look up or create by external_id (Odds API game ID)
-    if candidate.external_id:
-        existing = get_game_by_external_id(session, candidate.external_id)
+    external_id = _normalize_external_id(candidate.external_id)
+    if external_id:
+        candidate.external_id = external_id
+        existing = get_game_by_external_id(session, external_id)
         if existing:
             return existing.id
 
         game = upsert_game(session, {
-            "external_id": candidate.external_id,
+            "external_id": external_id,
             "sport": candidate.sport,
             "season": candidate.event_date.year,
             "game_date": candidate.event_date,
