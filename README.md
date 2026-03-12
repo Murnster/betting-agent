@@ -270,7 +270,21 @@ uv run python scripts/grade.py
 
 Grades each pick against final scores, calculates CLV (did the closing line move in your favor?), and prints an ROI summary.
 
-### 5. Generate picks
+### 5. Back up the database
+
+```bash
+uv run python scripts/backup_db.py
+```
+
+This writes a compressed PostgreSQL dump to `backups/postgres/` and deletes dumps older than 30 days by default.
+
+To restore from a backup:
+
+```bash
+pg_restore --clean --if-exists --dbname "$DATABASE_URL" backups/postgres/<backup-file>.dump
+```
+
+### 6. Generate picks
 
 ```bash
 # Print to terminal
@@ -283,7 +297,7 @@ uv run python scripts/picks.py --sport NBA --bankroll 100 --save
 uv run python scripts/picks.py --sport NBA --bankroll 100 --agent-mode top --agent-max-games 5 --save
 ```
 
-### 6. Standalone matchup analysis
+### 7. Standalone matchup analysis
 
 ```bash
 # Analyze all today's NBA games with Ollama
@@ -334,6 +348,12 @@ Run the setup script to see the recommended configuration:
 
 ```bash
 ./scripts/setup_cron.sh
+```
+
+Recommended cron addition for daily DB backups:
+
+```bash
+15 3 * * * cd /home/murney/source/betting-agent && uv run python scripts/backup_db.py >> /home/murney/source/betting-agent/logs/db_backup.log 2>&1
 ```
 
 ---

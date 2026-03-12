@@ -40,4 +40,6 @@ Thumbs.db
 logs/
 logs/*
 
+# Database backups
+backups/
 
