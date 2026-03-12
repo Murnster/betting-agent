@@ -92,12 +92,23 @@ def _build_pick_embed(
     stars = _confidence_stars(pick.edge, star_thresholds)
     matchup = f"{pick.away_team} @ {pick.home_team}"
 
+    edge_text = f"{pick.edge:+.1%}"
+    if pick.original_edge is not None and abs(pick.original_edge - pick.edge) > 1e-9:
+        edge_text = f"{pick.original_edge:+.1%} -> {pick.edge:+.1%}"
+
     desc = (
         f"{matchup}\n\n"
-        f"**Odds:** `{pick.odds:+d}`  |  **Edge:** `{pick.edge:+.1%}`  |  {stars}\n"
+        f"**Odds:** `{pick.odds:+d}`  |  **Edge:** `{edge_text}`  |  {stars}\n"
         f"**Model:** `{pick.model_prob:.1%}`  vs  **Market:** `{pick.implied_prob:.1%}`\n"
         f"**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}`"
     )
+
+    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+        desc += f"\n**Verdict:** `{pick.agent_verdict}`"
+
+    reasons = pick.agent_reasons or []
+    if reasons:
+        desc += "\n**Why:** " + "; ".join(reasons[:2])
 
     if analysis and analysis.get("key_factors"):
         factors = "\n".join(f"- {f}" for f in analysis["key_factors"])
@@ -111,7 +122,7 @@ def _build_pick_embed(
 
 
 def _build_summary_embed(
-    candidates: list[BetCandidate], bankroll: float, sport: str
+    candidates: list[BetCandidate], bankroll: float, sport: str, agent_summary: dict | None = None
 ) -> dict:
     """Build a header embed summarizing today's picks."""
     total_action = sum(c.recommended_bet for c in candidates)
@@ -125,6 +136,17 @@ def _build_summary_embed(
         f"**{len(candidates)} Picks**  |  "
         f"**Action:** ${total_action:.2f} ({pct_bankroll:.1f}%)"
     )
+    if agent_summary and (
+        agent_summary.get("validated_games")
+        or agent_summary.get("skipped_games")
+        or agent_summary.get("total_cost_usd")
+    ):
+        desc += (
+            "\n"
+            f"**Validator:** {agent_summary.get('validated_games', 0)} games  |  "
+            f"**Skipped:** {agent_summary.get('skipped_games', 0)}  |  "
+            f"**Cost:** ${agent_summary.get('total_cost_usd', 0.0):.4f}"
+        )
 
     return {
         "title": f"{emoji} Picks of the Day \u2014 {sport}",
@@ -134,7 +156,7 @@ def _build_summary_embed(
 
 
 def send_picks_to_discord(
-    candidates: list[BetCandidate], bankroll: float, sport: str
+    candidates: list[BetCandidate], bankroll: float, sport: str, agent_summary: dict | None = None
 ) -> bool:
     """
     Send today's picks to the Discord picks channel for the given sport.
@@ -157,7 +179,7 @@ def send_picks_to_discord(
     from betting_agent.sports.registry import get_sport_config
     star_thresholds = get_sport_config(sport).star_thresholds
 
-    embeds = [_build_summary_embed(candidates, bankroll, sport)]
+    embeds = [_build_summary_embed(candidates, bankroll, sport, agent_summary=agent_summary)]
     ranked = sorted(candidates, key=lambda c: c.edge, reverse=True)
     for rank, pick in enumerate(ranked, 1):
         analysis = pick.extra.get("analysis") if pick.extra else None
@@ -375,8 +397,8 @@ def _aggregate_sport_summaries(
         "total_pnl": round(total_pnl, 2),
         "total_wagered": round(total_wagered, 2),
         "roi_pct": round(
-            (total_pnl / total_starting_bankroll * 100.0)
-            if total_starting_bankroll
+            (total_pnl / total_wagered * 100.0)
+            if total_wagered
             else 0.0,
             2,
         ),

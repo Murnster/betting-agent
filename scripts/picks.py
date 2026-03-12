@@ -9,10 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import pickle
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -47,6 +45,19 @@ def main() -> None:
         help=f"Sport ({', '.join(available_sports())})",
     )
     parser.add_argument("--save", action="store_true", help="Save picks to DB")
+    parser.add_argument(
+        "--agent-mode",
+        type=str,
+        default=settings.agent_mode if settings.agent_enabled else "off",
+        choices=("off", "top", "all"),
+        help="Validator mode: off, top, or all",
+    )
+    parser.add_argument(
+        "--agent-max-games",
+        type=int,
+        default=settings.agent_max_games_per_run,
+        help="Maximum games to validate when agent mode is enabled",
+    )
     args = parser.parse_args()
 
     sport = args.sport.upper()
@@ -188,7 +199,8 @@ def main() -> None:
     features_all = config.build_features(combined)
     # Retrieve upcoming rows by the tag column, then restore original order
     if "_is_upcoming" in features_all.columns:
-        upcoming_features = features_all[features_all["_is_upcoming"] == True].copy()
+        upcoming_mask = features_all["_is_upcoming"].astype(bool)
+        upcoming_features = features_all[upcoming_mask].copy()
         if "_upcoming_idx" in upcoming_features.columns:
             upcoming_features = upcoming_features.sort_values("_upcoming_idx")
         features = upcoming_features.drop(columns=["_is_upcoming", "_upcoming_idx"], errors="ignore").reset_index(drop=True)
@@ -196,58 +208,62 @@ def main() -> None:
         features = features_all.tail(len(upcoming_df)).reset_index(drop=True)
     metadata = upcoming_df.drop(columns=["_is_upcoming", "_upcoming_idx"], errors="ignore").reset_index(drop=True)
 
-    # ---- Sentiment + Game Analysis (optional) ----
+    use_agent = args.agent_mode != "off"
+
+    # ---- Sentiment + Game Analysis (optional legacy path) ----
     sentiment_scores: dict[str, float] | None = None
     game_analyses: dict[str, dict] = {}
-    try:
-        from betting_agent.intelligence.sentiment import (
-            is_ollama_available,
-            fetch_team_context,
-            analyze_game,
-            store_sentiment,
-        )
-        if is_ollama_available():
-            logger.info("Ollama available — running game analysis...")
-            sentiment_scores = {}
-            depth = settings.sentiment_depth
-            for _, row in metadata.iterrows():
-                home_t = str(row.get("home_team", ""))
-                away_t = str(row.get("away_team", ""))
-                if not home_t or not away_t or home_t in sentiment_scores:
-                    continue
+    if not use_agent:
+        try:
+            from betting_agent.intelligence.sentiment import (
+                analyze_game,
+                fetch_team_context,
+                is_ollama_available,
+                store_sentiment,
+            )
+            import json
 
-                home_ctx = fetch_team_context(home_t, current_year, depth=depth, sport=sport)
-                away_ctx = fetch_team_context(away_t, current_year, depth=depth, sport=sport)
-                result = analyze_game(home_t, away_t, home_ctx, away_ctx, sport=sport)
+            if is_ollama_available():
+                logger.info("Ollama available — running game analysis...")
+                sentiment_scores = {}
+                depth = settings.sentiment_depth
+                for _, row in metadata.iterrows():
+                    home_t = str(row.get("home_team", ""))
+                    away_t = str(row.get("away_team", ""))
+                    if not home_t or not away_t or home_t in sentiment_scores:
+                        continue
 
-                sentiment_scores[home_t] = result["home_score"]
-                sentiment_scores[away_t] = result["away_score"]
-                game_analyses[f"{home_t}|{away_t}"] = result
-                logger.info(
-                    "  %s vs %s: home=%.2f away=%.2f edge=%s",
-                    home_t, away_t,
-                    result["home_score"], result["away_score"],
-                    result["matchup_edge"],
-                )
+                    home_ctx = fetch_team_context(home_t, current_year, depth=depth, sport=sport)
+                    away_ctx = fetch_team_context(away_t, current_year, depth=depth, sport=sport)
+                    result = analyze_game(home_t, away_t, home_ctx, away_ctx, sport=sport)
 
-                # Persist to DB if game_id is available
-                game_id = row.get("game_id")
-                if game_id and args.save:
-                    try:
-                        summary_json = json.dumps(result)
-                        store_sentiment(
-                            game_id=int(game_id) if str(game_id).isdigit() else 0,
-                            team=f"{home_t} vs {away_t}",
-                            score=(result["home_score"] + result["away_score"]) / 2,
-                            summary=summary_json,
-                            analysis_type="game",
-                        )
-                    except Exception as exc:
-                        logger.debug("Could not store game analysis: %s", exc)
-        else:
-            logger.info("Ollama not available — skipping sentiment")
-    except Exception as exc:
-        logger.warning("Sentiment failed, continuing without: %s", exc)
+                    sentiment_scores[home_t] = result["home_score"]
+                    sentiment_scores[away_t] = result["away_score"]
+                    game_analyses[f"{home_t}|{away_t}"] = result
+                    logger.info(
+                        "  %s vs %s: home=%.2f away=%.2f edge=%s",
+                        home_t, away_t,
+                        result["home_score"], result["away_score"],
+                        result["matchup_edge"],
+                    )
+
+                    game_id = row.get("game_id")
+                    if game_id and args.save:
+                        try:
+                            summary_json = json.dumps(result)
+                            store_sentiment(
+                                game_id=int(game_id) if str(game_id).isdigit() else 0,
+                                team=f"{home_t} vs {away_t}",
+                                score=(result["home_score"] + result["away_score"]) / 2,
+                                summary=summary_json,
+                                analysis_type="game",
+                            )
+                        except Exception as exc:
+                            logger.debug("Could not store game analysis: %s", exc)
+            else:
+                logger.info("Ollama not available — skipping sentiment")
+        except Exception as exc:
+            logger.warning("Sentiment failed, continuing without: %s", exc)
 
     # ---- Generate picks ----
     sigma = engine.get_sigma()
@@ -268,14 +284,37 @@ def main() -> None:
         margin_sigma=sigma["margin_sigma"],
     )
 
-    # ---- Attach analysis data to candidates for CLI display ----
-    for c in candidates:
-        key = f"{c.home_team}|{c.away_team}"
-        if key in game_analyses:
-            c.extra["analysis"] = game_analyses[key]
+    agent_summary: dict | None = None
+    validation_records = []
+
+    if use_agent and candidates:
+        try:
+            from betting_agent.intelligence.validator import validate_picks
+
+            candidates, validation = validate_picks(
+                candidates,
+                sport=sport,
+                history_df=hist_df,
+                metadata_df=metadata,
+                mode=args.agent_mode,
+                max_games=args.agent_max_games,
+            )
+            validation_records = validation.records
+            agent_summary = {
+                "validated_games": validation.validated_games,
+                "skipped_games": validation.skipped_games,
+                "total_cost_usd": validation.total_cost_usd,
+            }
+        except Exception as exc:
+            logger.warning("Validator failed, continuing without adjustments: %s", exc)
+    else:
+        for c in candidates:
+            key = f"{c.home_team}|{c.away_team}"
+            if key in game_analyses:
+                c.extra["analysis"] = game_analyses[key]
 
     # ---- Output ----
-    print(format_picks_cli(candidates, args.bankroll, sport=sport))
+    print(format_picks_cli(candidates, args.bankroll, sport=sport, agent_summary=agent_summary))
 
     if args.save and candidates:
         try:
@@ -284,13 +323,21 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Could not save picks to DB: %s", exc)
 
+    if args.save and validation_records:
+        try:
+            from betting_agent.intelligence.validator import save_agent_validations_to_db
+
+            save_agent_validations_to_db(validation_records)
+        except Exception as exc:
+            logger.warning("Could not save agent validations to DB: %s", exc)
+
     # ---- Discord notification ----
     if settings.discord_enabled:
         try:
             from betting_agent.notifications.discord import send_picks_to_discord, is_discord_configured
             if is_discord_configured(sport, "PICKS"):
                 logger.info("Sending picks to Discord (%s)...", sport)
-                send_picks_to_discord(candidates, args.bankroll, sport)
+                send_picks_to_discord(candidates, args.bankroll, sport, agent_summary=agent_summary)
         except Exception as exc:
             logger.warning("Discord notification failed: %s", exc)
 

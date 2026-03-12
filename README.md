@@ -1,8 +1,8 @@
 # betting-agent
 
-A local, automated sports betting ETL pipeline and prediction engine. Generates daily **+EV Picks of the Day (POTD)**, backtests historical games to validate strategy, and tracks **Closing Line Value (CLV)** and **ROI** over time.
+A local sports betting ETL pipeline, prediction engine, and post-picks AI validator. It generates daily **+EV Picks of the Day (POTD)**, can save and grade picks over time, tracks **Closing Line Value (CLV)** and **ROI**, and optionally runs a lean AI review pass to reduce or kill risky bets before you send or save them.
 
-Currently supports **NFL** and **NBA**. Runs entirely on local hardware — no paid LLM APIs, $0–$15/month budget.
+Currently supports **NFL**, **NBA**, **NHL**, and **MLB**. The core quant pipeline runs locally; the optional validator uses paid APIs and is budget-capped by default.
 
 ---
 
@@ -11,13 +11,17 @@ Currently supports **NFL** and **NBA**. Runs entirely on local hardware — no p
 Three layers process data end-to-end each day:
 
 ```
-Extraction Layer       Intelligence Layer        Accounting Layer
-─────────────────      ──────────────────────    ──────────────────────
-nflreadpy / nba_api ─► Feature engineering   ─► Grade yesterday's picks
-The Odds API        ─► XGBoost prediction    ─► Log CLV
-OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
-                       Kelly Criterion sizing
-                       Ollama sentiment (LLM)
+Extraction Layer       Intelligence Layer             Accounting Layer
+─────────────────      ───────────────────────────    ──────────────────────
+Sport loaders      ─► Feature engineering         ─► Grade yesterday's picks
+The Odds API       ─► XGBoost prediction          ─► Log CLV
+OpenWeatherMap     ─► Vig-removed edge calc       ─► Update ROI report
+                     Kelly Criterion sizing
+                     Optional Ollama sentiment
+                     Optional AI validator:
+                       deterministic checks
+                       Tavily search
+                       Gemini review
 ```
 
 ### Prediction Pipeline
@@ -27,6 +31,7 @@ OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
 3. **Edge calculation** — Compares model probability against vig-removed implied probability from The Odds API
 4. **Kelly Criterion sizing** — Fractional Kelly with hard caps to size each bet as a % of bankroll
 5. **Filtering** — Only surfaces picks with `edge >= MIN_EDGE_PCT` (default 1.5%)
+6. **Optional post-picks validator** — Groups picks by game, runs deterministic checks, performs up to 2 Tavily searches per game, calls Gemini once per validated game, and returns `UNCHANGED`, `REDUCED`, `NO_BET`, or `SKIPPED`
 
 ---
 
@@ -42,7 +47,7 @@ OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
 | Weather         | OpenWeatherMap                                                              |
 | ML models       | XGBoost + scikit-learn                                                      |
 | Calibration     | IsotonicRegression                                                          |
-| Sentiment/AI    | Ollama (local LLM, default: `llama3.1:8b`)                                  |
+| Sentiment/AI    | Ollama (legacy local sentiment), Gemini + Tavily (post-picks validator)     |
 | Database        | PostgreSQL                                                                  |
 | ORM/Migrations  | SQLAlchemy 2.x + Alembic                                                    |
 
@@ -64,6 +69,8 @@ OpenWeatherMap      ─► Vig-removed edge calc ─► Update ROI report
 - PostgreSQL — enables the daily extract/grade/CLV/ROI workflow. Training and picks work without it (`--no-seed`)
 - [Ollama](https://ollama.com) — adds LLM sentiment analysis to picks (`ollama pull llama3.1:8b`). If unavailable, picks generate from the ML model alone
 - OpenWeatherMap API key — NFL weather features (free tier available)
+- [Google Gemini API key](https://aistudio.google.com/apikey) — required for the post-picks validator reasoning step
+- [Tavily API key](https://app.tavily.com) — required for the validator search step
 
 ---
 
@@ -91,6 +98,8 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/betting_agent  # opti
 WEATHER_API_KEY=your_key_here           # optional
 OLLAMA_URL=http://localhost:11434/api/generate  # optional
 OLLAMA_MODEL=llama3.1:8b                        # optional
+GEMINI_API_KEY=your_key_here                    # optional, required for validator
+TAVILY_API_KEY=your_key_here                    # optional, required for validator
 ```
 
 Strategy defaults (override in `.env` if desired):
@@ -101,6 +110,17 @@ MAX_KELLY_PCT=0.05     # Kelly fraction cap
 MAX_BET_PCT=0.07       # max % of bankroll per bet
 STARTING_BANKROLL=100.0
 SENTIMENT_WEIGHT=0.02  # max edge adjustment from Ollama sentiment (-1 to +1 scaled)
+
+# Post-picks AI validator (optional)
+AGENT_ENABLED=false
+AGENT_MODE=top                 # off | top | all
+AGENT_MAX_GAMES_PER_RUN=5
+AGENT_SEARCH_QUERIES_PER_GAME=2
+AGENT_MODEL=gemini/gemini-2.5-flash
+AGENT_MAX_EDGE_ADJUSTMENT=0.03
+AGENT_DAILY_BUDGET_USD=0.50
+AGENT_MONTHLY_BUDGET_TARGET_USD=15.0
+AGENT_REQUEST_TIMEOUT=20
 
 # Discord notifications (optional — one webhook per sport/channel)
 # DISCORD_WEBHOOK_NFL_PICKS=https://discord.com/api/webhooks/...
@@ -151,9 +171,37 @@ uv run python scripts/picks.py --sport NFL --bankroll 100
 
 # NBA picks
 uv run python scripts/picks.py --sport NBA --bankroll 100
+
+# NHL picks
+uv run python scripts/picks.py --sport NHL --bankroll 100
+
+# MLB picks
+uv run python scripts/picks.py --sport MLB --bankroll 100
 ```
 
-If Ollama is running, each matchup gets an LLM-powered analysis (injury context, team stats, key matchup factors). If Ollama is unavailable, picks generate from the ML model alone — no errors.
+If Ollama is running and the validator is off, each matchup can still get the legacy sentiment analysis. If Ollama is unavailable, picks generate from the ML model alone.
+
+### 6. Run picks with the AI validator
+
+```bash
+# Validate the top 3 games only
+uv run python scripts/picks.py --sport NBA --bankroll 100 --agent-mode top --agent-max-games 3
+
+# Validate the full slate
+uv run python scripts/picks.py --sport NHL --bankroll 100 --agent-mode all
+
+# Save picks and validation rows to Postgres
+uv run python scripts/picks.py --sport MLB --bankroll 100 --agent-mode top --agent-max-games 5 --save
+```
+
+The validator runs **after** `generate_picks()`. It does not replace the quant model; it is a safety layer that can:
+
+- leave a pick unchanged
+- reduce Kelly sizing and recommended bet amount
+- drop a pick entirely
+- skip validation if the budget is exhausted or the APIs are unavailable
+
+By default it validates the top games by edge, not every game, so the cost stays bounded.
 
 ---
 
@@ -165,7 +213,7 @@ PostgreSQL is required for the daily extract/grade/CLV/ROI workflow and for savi
 # Create DB (run once)
 sudo -u postgres psql -c "CREATE DATABASE betting_agent;"
 
-# Apply schema (creates games, odds, sentiment, picks tables)
+# Apply schema (creates games, odds, sentiment, picks, and agent_validations tables)
 uv run alembic upgrade head
 ```
 
@@ -188,7 +236,7 @@ This deletes **all** games, odds, sentiment, and picks data. To re-populate:
 
 ## Daily Workflow
 
-Requires PostgreSQL. All scripts accept `--sport NFL` or `--sport NBA` (default: NFL).
+Requires PostgreSQL. All scripts accept `--sport NFL`, `--sport NBA`, `--sport NHL`, or `--sport MLB` (default: NFL).
 
 ### 1. Morning — fetch schedule + opening odds + weather
 
@@ -230,6 +278,9 @@ uv run python scripts/picks.py --sport NBA --bankroll 100
 
 # Save picks to DB
 uv run python scripts/picks.py --sport NBA --bankroll 100 --save
+
+# Save picks plus validator results
+uv run python scripts/picks.py --sport NBA --bankroll 100 --agent-mode top --agent-max-games 5 --save
 ```
 
 ### 6. Standalone matchup analysis
@@ -241,6 +292,36 @@ uv run python scripts/analyze.py --sport NBA
 # Analyze a specific NFL matchup
 uv run python scripts/analyze.py --sport NFL --home "Kansas City Chiefs" --away "Buffalo Bills"
 ```
+
+## AI Validator
+
+The current AI integration is a **lean post-picks validator**, not a multi-agent LangGraph workflow.
+
+What it does:
+
+- groups picks by game
+- ranks games by highest edge
+- validates only the selected games (`top` mode by default)
+- runs deterministic checks first (for example, NBA/NHL back-to-back and NFL severe weather when present)
+- runs Tavily search on current injuries / lineup / starter / goalie / QB context
+- sends one compact payload to Gemini for a structured verdict
+- writes per-pick validation results to `agent_validations` when `--save` is used
+
+What it does not do:
+
+- it does not replace the quant model
+- it does not guarantee a higher hit rate
+- it does not run if you leave `--agent-mode off`
+
+Default behavior:
+
+- model: `gemini/gemini-2.5-flash`
+- search provider: Tavily
+- search count: 2 queries per validated game
+- budget strategy: daily budget cap with fail-open behavior
+- output verdicts: `UNCHANGED`, `REDUCED`, `NO_BET`, `SKIPPED`
+
+If the validator APIs fail or the budget is exhausted, the picks pipeline continues and preserves the original picks.
 
 ## Automation
 

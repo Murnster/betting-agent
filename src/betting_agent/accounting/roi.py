@@ -8,7 +8,6 @@ from datetime import date
 from typing import Any
 
 
-from betting_agent.config import settings
 from betting_agent.db.models import Pick
 from betting_agent.db.session import get_session
 
@@ -66,7 +65,7 @@ def get_summary(
         "win_rate_pct": _pct(wins, wins + losses),
         "total_pnl": round(total_pnl, 2),
         "total_wagered": round(total_wagered, 2),
-        "roi_pct": round((total_pnl / settings.starting_bankroll * 100.0) if settings.starting_bankroll else 0.0, 2),
+        "roi_pct": round((total_pnl / total_wagered * 100.0) if total_wagered else 0.0, 2),
         "avg_edge_pct": round(avg_edge * 100.0, 2),
         "avg_clv_pct": round(avg_clv * 100.0, 2) if avg_clv is not None else None,
     }

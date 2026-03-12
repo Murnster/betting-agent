@@ -1,6 +1,8 @@
 """Tests for pick generation: dedup, correlation adjustment, underdog ML."""
 
+from contextlib import contextmanager
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -8,7 +10,9 @@ import pandas as pd
 from betting_agent.intelligence.picks import (
     BetCandidate,
     _extract_team_from_pick,
+    format_picks_cli,
     generate_picks,
+    save_picks_to_db,
 )
 
 
@@ -232,6 +236,75 @@ class TestMissingOdds:
         assert len(home_ml) == 0, "Should not generate home ML pick when home odds are missing"
 
 
+class TestGameDateSelection:
+    def test_generate_picks_preserves_pick_date_and_tracks_scheduled_game_date(self):
+        engine = _make_mock_engine(win_prob=0.65)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "game_date": ["2026-01-20"],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=150, away_ml=-180)
+
+        candidates = generate_picks(
+            features,
+            metadata,
+            odds,
+            engine,
+            bankroll=100.0,
+            sport="NFL",
+            pick_date=date(2026, 1, 15),
+        )
+
+        assert candidates
+        assert all(candidate.game_date == date(2026, 1, 15) for candidate in candidates)
+        assert all(candidate.scheduled_game_date == date(2026, 1, 20) for candidate in candidates)
+
+    def test_save_picks_to_db_skips_existing_pick_when_dates_differ(self, monkeypatch):
+        added = []
+
+        class _Query:
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                return [
+                    SimpleNamespace(
+                        game_id=7,
+                        bet_type="moneyline",
+                        pick_date=date(2026, 1, 15),
+                    )
+                ]
+
+        class _Session:
+            def query(self, model):
+                return _Query()
+
+            def add(self, row):
+                added.append(row)
+
+        @contextmanager
+        def _fake_session():
+            yield _Session()
+
+        monkeypatch.setattr("betting_agent.intelligence.picks.get_session", _fake_session)
+        monkeypatch.setattr("betting_agent.intelligence.picks._resolve_game_id", lambda session, c: 7)
+
+        candidate = _make_candidate(
+            game_id=0,
+            external_id="game-1",
+            game_date=date(2026, 1, 15),
+            scheduled_game_date=date(2026, 1, 16),
+        )
+
+        save_picks_to_db([candidate])
+
+        assert added == []
+
+
 class TestScoringSimga:
     def test_sigma_passed_to_edge_calcs(self):
         """NBA sigma (11.5) should produce different results than NFL (14.0)."""
@@ -340,3 +413,25 @@ class TestCorrelatedPickDedup:
         assert _extract_team_from_pick(c_away_ml) == "TeamB"
         assert _extract_team_from_pick(c_home_spread) == "TeamA"
         # Different team keys → both would survive the dedup
+
+
+class TestAgentFormatting:
+    def test_format_picks_cli_shows_agent_adjustments(self):
+        pick = _make_candidate(
+            edge=0.04,
+            original_edge=0.06,
+            agent_verdict="REDUCED",
+            agent_reasons=["lineup uncertainty", "starter news stale"],
+            recommended_bet=15.0,
+        )
+        rendered = format_picks_cli(
+            [pick],
+            bankroll=100.0,
+            sport="NFL",
+            agent_summary={"validated_games": 1, "skipped_games": 0, "total_cost_usd": 0.0123},
+        )
+
+        assert "Validator: 1 games" in rendered
+        assert "Verdict: REDUCED" in rendered
+        assert "+6.0% -> +4.0%" in rendered
+        assert "lineup uncertainty" in rendered

@@ -4,16 +4,7 @@ Tables: games, odds, sentiment, picks
 """
 
 from datetime import datetime
-from sqlalchemy import (
-    Boolean,
-    Column,
-    Date,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-)
+from sqlalchemy import Boolean, Column, Date, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy import TIMESTAMP as TIMESTAMPTZ
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -92,6 +83,9 @@ class Game(Base):
     odds = relationship("Odds", back_populates="game", cascade="all, delete-orphan")
     sentiment = relationship("Sentiment", back_populates="game", cascade="all, delete-orphan")
     picks = relationship("Pick", back_populates="game", cascade="all, delete-orphan")
+    agent_validations = relationship(
+        "AgentValidation", back_populates="game", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Game {self.away_team}@{self.home_team} {self.game_date} {self.sport}>"
@@ -164,3 +158,31 @@ class Pick(Base):
 
     def __repr__(self) -> str:
         return f"<Pick game_id={self.game_id} {self.bet_type} {self.pick_side} edge={self.edge:.3f}>"
+
+
+class AgentValidation(Base):
+    __tablename__ = "agent_validations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey("games.id"), nullable=True)
+    external_id = Column(String(100), nullable=True)
+    pick_date = Column(Date, nullable=False)
+    sport = Column(String(10), nullable=False)
+    bet_type = Column(String(20), nullable=False)
+    pick_side = Column(String(100), nullable=False)
+    verdict = Column(String(12), nullable=False)
+    original_edge = Column(Float, nullable=True)
+    adjusted_edge = Column(Float, nullable=True)
+    reasons_json = Column(JSON, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cost_usd = Column(Float, nullable=True)
+    validated_at = Column(TIMESTAMPTZ, default=datetime.utcnow)
+
+    game = relationship("Game", back_populates="agent_validations")
+
+    def __repr__(self) -> str:
+        return (
+            f"<AgentValidation sport={self.sport} pick={self.pick_side} "
+            f"verdict={self.verdict}>"
+        )

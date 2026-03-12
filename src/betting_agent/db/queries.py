@@ -5,9 +5,10 @@ Common reusable DB queries.
 from datetime import date
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from betting_agent.db.models import Game, Odds, Pick
+from betting_agent.db.models import AgentValidation, Game, Odds, Pick
 
 
 def get_game_by_external_id(session: Session, external_id: str) -> Optional[Game]:
@@ -74,3 +75,12 @@ def upsert_game(session: Session, game_data: dict) -> Game:
     session.add(game)
     session.flush()
     return game
+
+
+def get_agent_spend_for_date(session: Session, target_date: date) -> float:
+    value = (
+        session.query(func.coalesce(func.sum(AgentValidation.cost_usd), 0.0))
+        .filter(AgentValidation.pick_date == target_date)
+        .scalar()
+    )
+    return float(value or 0.0)

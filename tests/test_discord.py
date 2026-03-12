@@ -13,6 +13,7 @@ from betting_agent.notifications.discord import (
     COLOR_GREY,
     COLOR_RED,
     MAX_EMBEDS_PER_MESSAGE,
+    _aggregate_sport_summaries,
     _build_alltime_sport_embed,
     _build_breakdown_embed,
     _build_pick_embed,
@@ -113,6 +114,20 @@ def test_build_pick_embed_with_key_factors():
     assert "- Home field advantage" in embed["description"]
 
 
+def test_build_pick_embed_with_validator_fields():
+    pick = _make_candidate(
+        edge=0.04,
+        original_edge=0.08,
+        agent_verdict="REDUCED",
+        agent_reasons=["lineup uncertainty", "stale starter news"],
+    )
+    embed = _build_pick_embed(pick, rank=1)
+
+    assert "+8.0% -> +4.0%" in embed["description"]
+    assert "Verdict" in embed["description"]
+    assert "lineup uncertainty" in embed["description"]
+
+
 def test_build_pick_embed_no_analysis():
     pick = _make_candidate(edge=0.08, odds=-110)
     embed = _build_pick_embed(pick, rank=1, analysis=None)
@@ -137,6 +152,19 @@ def test_build_summary_embed():
     assert "$50.00" in embed["description"]
     assert "2 Picks" in embed["description"]
     assert "$1,000.00" in embed["description"]
+
+
+def test_build_summary_embed_with_validator_summary():
+    candidates = [_make_candidate(recommended_bet=30.0)]
+    embed = _build_summary_embed(
+        candidates,
+        bankroll=1000.0,
+        sport="NFL",
+        agent_summary={"validated_games": 1, "skipped_games": 0, "total_cost_usd": 0.0123},
+    )
+
+    assert "Validator" in embed["description"]
+    assert "$0.0123" in embed["description"]
 
 
 def test_build_results_embed_positive_pnl():
@@ -484,11 +512,13 @@ def test_send_alltime_sends_header_plus_sport_embeds(mock_send, monkeypatch):
     summaries = {
         "NFL": {
             "total_bets": 50, "wins": 30, "losses": 18, "pushes": 2,
-            "win_rate_pct": 62.5, "total_pnl": 200.0, "roi_pct": 10.0, "avg_edge_pct": 4.0,
+            "win_rate_pct": 62.5, "total_pnl": 200.0, "total_wagered": 1000.0,
+            "roi_pct": 20.0, "avg_edge_pct": 4.0,
         },
         "NBA": {
             "total_bets": 30, "wins": 15, "losses": 14, "pushes": 1,
-            "win_rate_pct": 51.7, "total_pnl": -20.0, "roi_pct": -2.0, "avg_edge_pct": 2.5,
+            "win_rate_pct": 51.7, "total_pnl": -20.0, "total_wagered": 500.0,
+            "roi_pct": -4.0, "avg_edge_pct": 2.5,
         },
     }
 
@@ -504,7 +534,37 @@ def test_send_alltime_sends_header_plus_sport_embeds(mock_send, monkeypatch):
     assert "All Sports" in embeds[1]["title"]
     assert "$2,000.00" in embeds[1]["description"]
     assert "$2,180.00" in embeds[1]["description"]
-    assert "ROI:** +9.00%" in embeds[1]["description"]
+    assert "ROI:** +12.00%" in embeds[1]["description"]
+
+
+def test_aggregate_sport_summaries_uses_total_wagered_for_roi():
+    summary = _aggregate_sport_summaries(
+        {
+            "NFL": {
+                "total_bets": 2,
+                "wins": 1,
+                "losses": 1,
+                "pushes": 0,
+                "total_pnl": 20.0,
+                "total_wagered": 100.0,
+                "avg_edge_pct": 5.0,
+            },
+            "NBA": {
+                "total_bets": 1,
+                "wins": 1,
+                "losses": 0,
+                "pushes": 0,
+                "total_pnl": 10.0,
+                "total_wagered": 50.0,
+                "avg_edge_pct": 4.0,
+            },
+        },
+        total_starting_bankroll=1000.0,
+    )
+
+    assert summary["total_wagered"] == 150.0
+    assert summary["total_pnl"] == 30.0
+    assert summary["roi_pct"] == 20.0
 
 
 @patch("betting_agent.notifications.discord._send_webhook")
@@ -538,7 +598,8 @@ def test_send_alltime_filters_out_empty_sports(mock_send, monkeypatch):
         "NFL": {"message": "No graded picks found"},
         "NBA": {
             "total_bets": 30, "wins": 15, "losses": 14, "pushes": 1,
-            "win_rate_pct": 51.7, "total_pnl": -20.0, "roi_pct": -2.0, "avg_edge_pct": 2.5,
+            "win_rate_pct": 51.7, "total_pnl": -20.0, "total_wagered": 1000.0,
+            "roi_pct": -2.0, "avg_edge_pct": 2.5,
         },
     }
     result = send_alltime_to_discord(summaries, 1000.0)

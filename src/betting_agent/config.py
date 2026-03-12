@@ -71,6 +71,44 @@ class Settings(BaseSettings):
     # Discord
     discord_enabled: bool = Field(default=True, description="Enable Discord webhook notifications")
 
+    # Lean validator
+    gemini_api_key: str = Field(default="", description="Gemini API key for validator requests")
+    tavily_api_key: str = Field(default="", description="Tavily API key for validator search")
+    agent_enabled: bool = Field(default=False, description="Enable the post-picks validator")
+    agent_mode: str = Field(default="top", description="Validator mode: off, top, or all")
+    agent_max_games_per_run: int = Field(
+        default=5, description="Maximum number of games to validate per run"
+    )
+    agent_search_queries_per_game: int = Field(
+        default=2, description="Maximum Tavily queries per validated game"
+    )
+    agent_model: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Default Gemini model for validator reasoning",
+    )
+    agent_premium_model: str = Field(
+        default="gemini/gemini-2.5-pro",
+        description="Premium Gemini model for future escalation",
+    )
+    agent_enable_premium_escalation: bool = Field(
+        default=False, description="Allow premium-model escalation for validator reasoning"
+    )
+    agent_premium_max_games_per_day: int = Field(
+        default=1, description="Maximum premium-model validations per day"
+    )
+    agent_max_edge_adjustment: float = Field(
+        default=0.03, description="Maximum absolute edge adjustment from the validator"
+    )
+    agent_daily_budget_usd: float = Field(
+        default=0.50, description="Daily validator budget before skipping validation"
+    )
+    agent_monthly_budget_target_usd: float = Field(
+        default=15.0, description="Target monthly validator budget for observability"
+    )
+    agent_request_timeout: int = Field(
+        default=20, description="Validator API request timeout in seconds"
+    )
+
     # Paths
     saved_models_dir: str = Field(default="saved_models", description="Directory for saved models")
 

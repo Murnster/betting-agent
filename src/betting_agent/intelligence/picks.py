@@ -41,11 +41,22 @@ class BetCandidate:
     implied_prob: float
     edge: float
     odds: int
+    scheduled_game_date: date | None = None
     kelly_fraction: float = 0.0
     recommended_bet: float = 0.0
     bankroll_at_pick: float = 0.0
     extra: dict = field(default_factory=dict)  # spread_line, total_line, etc.
     external_id: str | None = None  # Odds API game ID for DB upsert
+    original_edge: float | None = None
+    agent_verdict: str | None = None
+    agent_reasons: list[str] = field(default_factory=list)
+    agent_adjusted_bet: float | None = None
+    agent_adjusted_kelly: float | None = None
+    agent_cost_usd: float | None = None
+
+    @property
+    def event_date(self) -> date:
+        return self.scheduled_game_date or self.game_date
 
 
 def generate_picks(
@@ -100,6 +111,10 @@ def generate_picks(
         external_id = str(meta.get("external_id", "")) or None
         home = str(meta.get("home_team", ""))
         away = str(meta.get("away_team", ""))
+        scheduled_game_date = _coerce_game_date(
+            meta.get("game_date") or meta.get("gameday"),
+            fallback=pick_date,
+        )
 
         # Find best odds for this game (use Odds API name if available)
         home_odds_name = str(meta.get("home_team_odds", home))
@@ -133,6 +148,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
+                    scheduled_game_date=scheduled_game_date,
                     bet_type="moneyline", pick_side=home_odds_name,
                     model_prob=win_prob, implied_prob=implied, edge=edge,
                     odds=ml_home, kelly_fraction=kf, recommended_bet=bet,
@@ -153,6 +169,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
+                    scheduled_game_date=scheduled_game_date,
                     bet_type="moneyline", pick_side=away_odds_name,
                     model_prob=away_win_prob, implied_prob=implied, edge=edge,
                     odds=ml_away, kelly_fraction=kf, recommended_bet=bet,
@@ -175,6 +192,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
+                    scheduled_game_date=scheduled_game_date,
                     bet_type="spread", pick_side=f"{home_odds_name} {spread_line:+.1f}",
                     model_prob=cover_prob, implied_prob=implied, edge=s_edge,
                     odds=spread_home_price, kelly_fraction=kf, recommended_bet=bet,
@@ -196,6 +214,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
+                    scheduled_game_date=scheduled_game_date,
                     bet_type="total", pick_side=f"over {total_line}",
                     model_prob=over_prob, implied_prob=implied, edge=o_edge,
                     odds=over_price, kelly_fraction=kf, recommended_bet=bet,
@@ -212,6 +231,7 @@ def generate_picks(
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
+                    scheduled_game_date=scheduled_game_date,
                     bet_type="total", pick_side=f"under {total_line}",
                     model_prob=under_prob, implied_prob=implied, edge=u_edge,
                     odds=under_price, kelly_fraction=kf, recommended_bet=bet,
@@ -271,6 +291,13 @@ def _extract_team_from_pick(candidate: BetCandidate) -> str | None:
     return None
 
 
+def _coerce_game_date(value, fallback: date) -> date:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return fallback
+    return parsed.date()
+
+
 def _find_best_odds(odds_data: list[dict], home_team: str) -> dict:
     """Find best available odds for the home_team matchup in raw Odds API data."""
     from betting_agent.api.odds import OddsAPIClient
@@ -297,8 +324,8 @@ def _resolve_game_id(session, candidate: BetCandidate) -> int:
         game = upsert_game(session, {
             "external_id": candidate.external_id,
             "sport": candidate.sport,
-            "season": candidate.game_date.year,
-            "game_date": candidate.game_date,
+            "season": candidate.event_date.year,
+            "game_date": candidate.event_date,
             "home_team": candidate.home_team,
             "away_team": candidate.away_team,
             "status": "scheduled",
@@ -329,20 +356,20 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
             except ValueError as exc:
                 logger.warning("Skipping pick: %s", exc)
 
-        # Pre-fetch existing picks for these games/date to minimize queries
+        # Pre-fetch existing picks for these games. Existing rows may have been
+        # written under either the historical run date or a scheduled game date,
+        # so dedupe at the game/bet-type level.
         game_ids = set(resolved_ids.values())
-        pick_date = candidates[0].game_date
 
         existing_rows = (
             session.query(Pick)
             .filter(
-                Pick.pick_date == pick_date,
-                Pick.game_id.in_(game_ids)
+                Pick.game_id.in_(game_ids),
             )
             .all()
         )
 
-        # Create set of (game_id, bet_type) that already exist
+        # Create set of (game_id, bet_type) that already exist.
         existing_keys = {(r.game_id, r.bet_type) for r in existing_rows}
 
         added = 0
@@ -352,7 +379,8 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 continue
             db_game_id = resolved_ids[i]
 
-            if (db_game_id, c.bet_type) in existing_keys:
+            key = (db_game_id, c.bet_type)
+            if key in existing_keys:
                 skipped += 1
                 continue
 
@@ -371,7 +399,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 bankroll_at_pick=c.bankroll_at_pick,
             )
             session.add(pick)
-            existing_keys.add((db_game_id, c.bet_type))
+            existing_keys.add(key)
             added += 1
 
     if added > 0 or skipped > 0:
@@ -409,6 +437,7 @@ def format_picks_cli(
     candidates: list[BetCandidate],
     bankroll: float,
     sport: str = "NFL",
+    agent_summary: dict | None = None,
 ) -> str:
     """Format picks for terminal output in card-style ranked by confidence."""
     if not candidates:
@@ -432,6 +461,18 @@ def format_picks_cli(
         f"Total action: ${total_wagered:.2f} ({pct_bankroll:.1f}%)",
         "=" * 58,
     ]
+    if agent_summary and (
+        agent_summary.get("validated_games")
+        or agent_summary.get("skipped_games")
+        or agent_summary.get("total_cost_usd")
+    ):
+        lines.append(
+            "  Validator: "
+            f"{agent_summary.get('validated_games', 0)} games  |  "
+            f"Skipped: {agent_summary.get('skipped_games', 0)}  |  "
+            f"Cost: ${agent_summary.get('total_cost_usd', 0.0):.4f}"
+        )
+        lines.append("=" * 58)
 
     # Collect LLM analyses by game_id (show after cards)
     analyses: list[str] = []
@@ -456,14 +497,28 @@ def format_picks_cli(
             f"       Odds: {pick.odds:+d}",
             f"Bet: ${pick.recommended_bet:.2f}  ",
         ))
+        edge_text = f"{pick.edge:+.1%}"
+        if pick.original_edge is not None and abs(pick.original_edge - pick.edge) > 1e-9:
+            edge_text = f"{pick.original_edge:+.1%} -> {pick.edge:+.1%}"
         lines.append(_card_row(
-            f"       Edge: {pick.edge:+.1%}",
+            f"       Edge: {edge_text}",
             f"Kelly: {pick.kelly_fraction:.2%}  ",
         ))
         lines.append(_card_row(
             f"       Model: {pick.model_prob:.1%}",
             f"Implied: {pick.implied_prob:.1%}  ",
         ))
+        if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+            lines.append(_card_row(
+                f"       Verdict: {pick.agent_verdict}",
+                "Validator  ",
+            ))
+        if pick.agent_reasons:
+            reason = ", ".join(pick.agent_reasons[:2])[:48]
+            lines.append(_card_row(
+                f"       Why: {reason}",
+                "  ",
+            ))
         lines.append("  \u2514" + "\u2500" * W + "\u2518")
 
         # Collect LLM analysis if present (only once per game)
