@@ -8,6 +8,7 @@ import pandas as pd
 from betting_agent.intelligence.picks import (
     BetCandidate,
     _extract_team_from_pick,
+    _passes_guardrails,
     generate_picks,
 )
 
@@ -258,3 +259,57 @@ class TestCorrelatedPickDedup:
         assert _extract_team_from_pick(c_away_ml) == "TeamB"
         assert _extract_team_from_pick(c_home_spread) == "TeamA"
         # Different team keys → both would survive the dedup
+
+
+class TestGuardrails:
+    def test_max_edge_rejection(self):
+        """Picks with edge > max_edge_pct should be rejected."""
+        assert not _passes_guardrails(edge=0.20, odds=-110, model_prob=0.60, bet_type="moneyline")
+        assert not _passes_guardrails(edge=0.36, odds=-110, model_prob=0.60, bet_type="spread")
+        assert not _passes_guardrails(edge=0.16, odds=-110, model_prob=0.60, bet_type="total")
+
+    def test_underdog_odds_rejection(self):
+        """ML picks worse than +500 should be rejected."""
+        assert not _passes_guardrails(edge=0.05, odds=750, model_prob=0.40, bet_type="moneyline")
+        assert not _passes_guardrails(edge=0.05, odds=600, model_prob=0.40, bet_type="moneyline")
+        # +500 exactly should pass
+        assert _passes_guardrails(edge=0.05, odds=500, model_prob=0.40, bet_type="moneyline")
+        # Negative odds (favorites) always pass
+        assert _passes_guardrails(edge=0.05, odds=-200, model_prob=0.60, bet_type="moneyline")
+
+    def test_min_model_prob_rejection(self):
+        """ML picks with model prob < 20% should be rejected."""
+        assert not _passes_guardrails(edge=0.05, odds=300, model_prob=0.15, bet_type="moneyline")
+        assert not _passes_guardrails(edge=0.05, odds=300, model_prob=0.10, bet_type="moneyline")
+        # 20% exactly should pass
+        assert _passes_guardrails(edge=0.05, odds=300, model_prob=0.20, bet_type="moneyline")
+
+    def test_guardrails_only_apply_to_moneyline_for_odds_and_prob(self):
+        """Underdog odds and min prob guardrails don't apply to spread/total."""
+        assert _passes_guardrails(edge=0.05, odds=750, model_prob=0.15, bet_type="spread")
+        assert _passes_guardrails(edge=0.05, odds=750, model_prob=0.15, bet_type="total")
+
+    def test_normal_pick_passes(self):
+        """Normal picks with reasonable edge/odds/prob should pass."""
+        assert _passes_guardrails(edge=0.03, odds=-110, model_prob=0.55, bet_type="moneyline")
+        assert _passes_guardrails(edge=0.05, odds=200, model_prob=0.40, bet_type="moneyline")
+        assert _passes_guardrails(edge=0.04, odds=-110, model_prob=0.55, bet_type="spread")
+
+    def test_guardrails_in_generate_picks(self):
+        """Picks with huge edge should be filtered out of generate_picks."""
+        # Model says 43.6% win prob, odds +750 → huge edge, should be rejected
+        engine = _make_mock_engine(win_prob=0.436)
+        features = pd.DataFrame({"col1": [1.0]})
+        metadata = pd.DataFrame({
+            "game_id": [1],
+            "home_team": ["TeamA"],
+            "away_team": ["TeamB"],
+            "home_team_odds": ["TeamA"],
+        })
+        odds = _make_odds_data("TeamA", "TeamB", home_ml=750, away_ml=-1200)
+        candidates = generate_picks(
+            features, metadata, odds, engine,
+            bankroll=100.0, sport="NBA",
+        )
+        home_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamA"]
+        assert len(home_ml) == 0, "Huge underdog pick (+750) should be rejected by guardrails"

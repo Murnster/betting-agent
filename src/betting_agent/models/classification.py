@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 PARAMS = {
     "objective": "binary:logistic",
     "eval_metric": "logloss",
-    "max_depth": 3,
-    "eta": 0.01,
+    "max_depth": 4,
+    "eta": 0.02,
     "subsample": 0.75,
     "colsample_bytree": 0.7,
     "seed": 42,
 }
-NUM_ROUNDS = 500
-EARLY_STOPPING = 20
+NUM_ROUNDS = 800
+EARLY_STOPPING = 30
 
 
 def train_classifier(
@@ -114,12 +114,12 @@ def train_calibrated_classifier(
     """
     Train XGBoost classifier with isotonic regression calibration on a held-out fold.
 
-    Uses a 50/30/20 chronological split: train / calibration / test.
+    Uses a 60/20/20 chronological split: train / calibration / test.
     Returns (booster, calibrator) — save calibrator alongside the model.
     """
-    # 50/30/20 chronological split
+    # 60/20/20 chronological split
     n = len(X)
-    split_train = int(n * 0.50)
+    split_train = int(n * 0.60)
     split_cal = int(n * 0.80)
     X_train, X_cal, X_test = X.iloc[:split_train], X.iloc[split_train:split_cal], X.iloc[split_cal:]
     y_train, y_cal, y_test = y.iloc[:split_train], y.iloc[split_train:split_cal], y.iloc[split_cal:]
@@ -148,6 +148,22 @@ def train_calibrated_classifier(
     cal_probs_raw = model.predict(dcal)
     calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     calibrator.fit(cal_probs_raw, y_cal.values)
+
+    # Warn if calibrated output range is too narrow
+    cal_output = calibrator.predict(cal_probs_raw)
+    cal_min, cal_max = float(cal_output.min()), float(cal_output.max())
+    n_points = len(getattr(calibrator, "X_thresholds_", []))
+    logger.info(
+        "Calibrator: %d interpolation points, output range [%.3f, %.3f]",
+        n_points, cal_min, cal_max,
+    )
+    if cal_min > 0.10 or cal_max < 0.90:
+        logger.warning(
+            "Calibration range [%.3f, %.3f] does not cover [0.10, 0.90] — "
+            "model may not distinguish strong favorites/underdogs. "
+            "Consider adding more training data or tuning hyperparameters.",
+            cal_min, cal_max,
+        )
 
     # Evaluate on test set using calibrated probabilities
     test_probs_raw = model.predict(dtest)

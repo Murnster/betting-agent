@@ -27,6 +27,35 @@ from betting_agent.models.engine import PredictionEngine
 logger = logging.getLogger(__name__)
 
 
+def _passes_guardrails(
+    edge: float,
+    odds: int,
+    model_prob: float,
+    bet_type: str,
+) -> bool:
+    """Reject structurally suspect picks. Returns True if pick passes."""
+    if edge > settings.max_edge_pct:
+        logger.warning(
+            "Guardrail: rejecting pick — edge %.1f%% exceeds max %.1f%%",
+            edge * 100, settings.max_edge_pct * 100,
+        )
+        return False
+    if bet_type == "moneyline":
+        if odds > 0 and odds > settings.max_underdog_odds:
+            logger.warning(
+                "Guardrail: rejecting ML pick — odds +%d exceed max +%d",
+                odds, settings.max_underdog_odds,
+            )
+            return False
+        if model_prob < settings.min_model_prob:
+            logger.warning(
+                "Guardrail: rejecting ML pick — model prob %.1f%% below min %.1f%%",
+                model_prob * 100, settings.min_model_prob * 100,
+            )
+            return False
+    return True
+
+
 @dataclass
 class BetCandidate:
     game_id: int
@@ -114,7 +143,7 @@ def generate_picks(
             else:
                 edge = calculate_edge(win_prob, ml_home)
             edge += _sent_adj(home)
-            if edge >= settings.min_edge_pct:
+            if edge >= settings.min_edge_pct and _passes_guardrails(edge, ml_home, win_prob, "moneyline"):
                 implied = american_to_implied_prob(ml_home)
                 kf, bet = recommended_bet(win_prob, ml_home, edge, bankroll)
                 candidates.append(BetCandidate(
@@ -133,7 +162,7 @@ def generate_picks(
             else:
                 edge = calculate_edge(away_win_prob, ml_away)
             edge += _sent_adj(away)
-            if edge >= settings.min_edge_pct:
+            if edge >= settings.min_edge_pct and _passes_guardrails(edge, ml_away, away_win_prob, "moneyline"):
                 implied = american_to_implied_prob(ml_away)
                 kf, bet = recommended_bet(away_win_prob, ml_away, edge, bankroll)
                 candidates.append(BetCandidate(
@@ -155,7 +184,7 @@ def generate_picks(
                 away_odds=spread_away_price, sigma=margin_sigma,
             )
             s_edge += _sent_adj(home)
-            if s_edge >= settings.min_edge_pct:
+            if s_edge >= settings.min_edge_pct and _passes_guardrails(s_edge, spread_home_price, cover_prob, "spread"):
                 implied = american_to_implied_prob(spread_home_price)
                 kf, bet = recommended_bet(cover_prob, spread_home_price, s_edge, bankroll)
                 candidates.append(BetCandidate(
@@ -176,7 +205,7 @@ def generate_picks(
         if total_line and over_price:
             over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=under_price, sigma=total_sigma)
             o_edge += (_sent_adj(home) + _sent_adj(away)) / 2
-            if o_edge >= settings.min_edge_pct:
+            if o_edge >= settings.min_edge_pct and _passes_guardrails(o_edge, over_price, over_prob, "total"):
                 implied = american_to_implied_prob(over_price)
                 kf, bet = recommended_bet(over_prob, over_price, o_edge, bankroll)
                 candidates.append(BetCandidate(
@@ -192,7 +221,7 @@ def generate_picks(
         if total_line and under_price:
             under_prob, u_edge = calculate_total_edge(pred_total, total_line, under_price, "under", other_odds=over_price, sigma=total_sigma)
             u_edge += (_sent_adj(home) + _sent_adj(away)) / 2
-            if u_edge >= settings.min_edge_pct:
+            if u_edge >= settings.min_edge_pct and _passes_guardrails(u_edge, under_price, under_prob, "total"):
                 implied = american_to_implied_prob(under_price)
                 kf, bet = recommended_bet(under_prob, under_price, u_edge, bankroll)
                 candidates.append(BetCandidate(

@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     ml_dog_threshold: float = Field(default=0.46, description="ML underdog bet threshold")
     ou_threshold: float = Field(default=5.0, description="O/U distance threshold (points)")
 
+    # Guardrails — reject structurally suspect picks
+    max_edge_pct: float = Field(default=0.15, description="Reject picks with edge > 15%")
+    max_underdog_odds: int = Field(default=500, description="Reject ML picks worse than +500")
+    min_model_prob: float = Field(default=0.20, description="Reject ML picks with model prob < 20%")
+
     # NBA API
     nba_api_rate_limit: float = Field(default=0.6, description="Seconds between nba_api calls")
 
