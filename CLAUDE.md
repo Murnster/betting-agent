@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Automated sports betting ETL pipeline and prediction engine. Generates daily "+EV Picks of the Day" using XGBoost models, Kelly Criterion sizing, and optional Ollama sentiment analysis. Supports NFL and NBA, designed to extend to NHL+. Runs entirely on local hardware ($0-$15/month).
 
+Open follow-ups and deferred decisions live in `TODO.md` at the repo root — check it before starting work, and add to it rather than leaving loose ends in commit messages.
+
 ## Development Commands
 
 ```bash
