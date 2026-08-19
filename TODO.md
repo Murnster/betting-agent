@@ -13,39 +13,37 @@ Work the phases in order — each gates the next. Don't start props (Phase 3)
 until the real-line backtest (Phase 1) shows what the game-level model is
 worth and the ledger (Phase 2) can be trusted to score it.
 
-### Phase 0 — Correctness fixes (then retrain NFL)
+### Phase 0 — Correctness fixes (then retrain NFL) — DONE 2026-08-18
 
-- [ ] **F1 — Market-line leakage into NFL features.** nflreadpy schedules
-  include `spread_line`, `total_line`, `home_moneyline`, `away_moneyline`,
-  `home_spread_odds`, `away_spread_odds`, `over_odds`, `under_odds`, and
-  `div_game`. Add the market columns to the drop list in
-  `build_nfl_features()` (`src/betting_agent/sports/nfl/features.py`) — they
-  are currently trained on and zero-filled at pick time (train/serve skew).
-  Confirmed present in `saved_models/NFL/feature_names.pkl`. Also remove the
-  constant `home_is_favorite = -1`. NBA is clean. Retrain NFL after.
-- [ ] **F3 — Canonical team names.** DB mixes abbreviations (loader-seeded
-  games) and Odds-API full names (odds-created games); `pick_side` always
-  stores full names. `_grade_moneyline`/`_grade_spread`
-  (`src/betting_agent/accounting/grader.py`) and the `startswith` matching in
-  `accounting/clv.py` compare strings, so NBA picks whose game row came from
-  `_resolve_game_id()` grade wrong (win→loss, flipped spread margins, wrong
-  CLV price). Pick full Odds-API names as canon, normalise every write path,
-  backfill existing rows.
-- [ ] **F4 — Atomic (line, price) pairs per book.** `get_best_odds()`
-  (`src/betting_agent/api/odds.py`) takes best prices across bookmakers while
-  `spread_home`/`total_line` keep the last book seen, and vig removal uses
-  best prices from *different* books (inflates every ML edge). The same-book
-  `fair_home_price`/`fair_away_price` pair is collected but unused in
-  `generate_picks()`. Keep line+price atomic per book, remove vig within one
-  book, and support `bookmakers=bet365` (the book actually being used).
-- [ ] **F6 — Real weather.** nflreadpy now ships `temp`/`wind` (CLAUDE.md
-  says otherwise — stale). Map them to `temperature_f`/`wind_mph` in
-  `normalise_raw_schedules()`, drop the dead all-NaN columns and the
-  `weather_Unknown` OHE. Keep the OpenWeather client for upcoming-game
-  forecasts.
-- [ ] **F5 (smaller) — Elo warm-up skew.** `picks.py` warms Elo from base
-  1000 over ~640 games; training Elo accumulates over all seasons. Warm up
-  over the training span or persist Elo state at train time.
+All landed in commits 48699b5, f02ca6e, 80f55c7, 9950d2b. NFL retrained on
+2016-2025 (54 features, 2751 rows, 65.5% test accuracy, Brier 0.2144).
+Test count went 253 → 333.
+
+- [x] **F1 — Market-line leakage into NFL features.** Market columns dropped
+  in `build_nfl_features()`; constant `home_is_favorite` removed.
+- [x] **F8 (found during the work, worse than F1) — the NFL pick path had no
+  team-name bridge.** Odds API sends "Kansas City Chiefs", history keys on
+  "KC", so upcoming rows matched no history: base Elo 1000 for both teams,
+  empty rolling averages, no head-to-head. Combined with F1 and missing
+  roof/surface/div_game, 21 of 63 features were zero-filled at pick time.
+  Fixed with `NFL_FULL_TO_ABBREV` and `attach_schedule_context()`.
+  `PredictionEngine._align()` now warns when it zero-fills a trained feature.
+- [x] **F3 — Canonical team names.** Canon is the sport-native abbreviation
+  (not the Odds API name as the review proposed — every loader already writes
+  abbreviations, so converting on entry is the cheaper direction).
+  `sports/teams.py` provides `canonical_team`/`same_team`; grading and CLV
+  match through it and leave a pick ungraded rather than guessing.
+  `scripts/normalize_teams.py` backfills existing rows.
+- [x] **F4 — Atomic (line, price) pairs per book.** Per-book quotes; each side
+  reports its best price with that book's line and opposing price.
+  `PREFERRED_BOOKMAKERS=bet365` prices against the book actually used.
+  Correction to the review: cross-book pairing *understated* moneyline edges
+  rather than inflating them — best-of-both always has a smaller overround
+  than any real book.
+- [x] **F6 — Real weather.** `temp`/`wind` mapped in
+  `normalise_raw_schedules()`; dead `weather_Unknown` OHE removed.
+- [x] **F5 — Elo warm-up skew.** `training_meta.json` records the training
+  seasons; picks.py warms up over exactly those. Costs ~6s per run.
 
 ### Phase 1 — Real-line NFL backtest (the go/no-go gate)
 
@@ -92,8 +90,15 @@ worth and the ledger (Phase 2) can be trusted to score it.
 
 ### Housekeeping (any time)
 
-- [ ] Refresh CLAUDE.md + project memory: 253 tests (not 54), four sports
+- [ ] Refresh CLAUDE.md + project memory: 333 tests (not 54), four sports
   implemented, validator subsystem, nflreadpy has weather columns.
+- [ ] `picks.py` derives `season` from the calendar year, so NFL games in
+  January/February are tagged as the wrong season — that feeds Elo's
+  per-season mean reversion. Derive the season properly per sport.
+- [ ] The NBA/NHL/MLB pick paths still have no equivalent of
+  `attach_schedule_context()`, so venue/scheduling features available for
+  those sports may still arrive empty. Check each against the
+  `_align()` warning before trusting their picks.
 - [ ] Stop writing `saved_models/*_backtest_tmp/` into the real models dir
   (use a temp path) and delete the existing ones.
 - [ ] Sentiment adjusts `edge` but not `model_prob`, so Kelly sizes off a
