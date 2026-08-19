@@ -12,12 +12,14 @@ Usage:
     uv run python scripts/props.py                     # print picks
     uv run python scripts/props.py --save              # log to picks table
     uv run python scripts/props.py --max-events 5      # cap API spend
+    uv run python scripts/props.py --pick-games        # choose games first
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date, datetime
 
 from betting_agent.config import settings
@@ -53,6 +55,27 @@ def _pair_outcomes(market: dict) -> dict[tuple[str, float], dict[str, dict]]:
             continue
         pairs.setdefault((player, float(point)), {})[name] = outcome
     return pairs
+
+
+def _choose_events(events: list[dict]) -> list[dict]:
+    """
+    Interactive event picker. Listing events is a free API call; the paid
+    per-event odds calls only happen for what gets chosen here.
+    """
+    print("\nUpcoming games:")
+    for i, e in enumerate(events, 1):
+        when = e.get("commence_time", "")[:16].replace("T", " ")
+        print(f"  {i:>2}. {e.get('away_team', '?')} @ {e.get('home_team', '?')}  ({when} UTC)")
+    if not sys.stdin.isatty():
+        return events
+    raw = input("\nSelect games (e.g. 1,3,5 — or 'all'): ").strip().lower()
+    if raw in ("", "all", "a"):
+        return events
+    picked = []
+    for tok in raw.replace(" ", "").split(","):
+        if tok.isdigit() and 1 <= int(tok) <= len(events):
+            picked.append(events[int(tok) - 1])
+    return picked or events
 
 
 def _nfl_week(event_date: date, season: int) -> int:
@@ -162,6 +185,9 @@ def main() -> None:
     parser.add_argument("--min-edge", type=float, default=0.05,
                         help="Minimum prop edge (default 0.05)")
     parser.add_argument("--max-picks", type=int, default=10)
+    parser.add_argument("--pick-games", action="store_true",
+                        help="List upcoming games (free call) and choose which "
+                             "to fetch prop odds for — saves API credits")
     args = parser.parse_args()
 
     bankroll = args.bankroll or settings.starting_bankroll
@@ -180,8 +206,15 @@ def main() -> None:
         models[m] = model
 
     books = settings.preferred_bookmaker_list or ["bet365"]
+    chosen = None
+    if args.pick_games:
+        from betting_agent.api.odds import OddsAPIClient
+        upcoming = OddsAPIClient().fetch_events("americanfootball_nfl")
+        if not upcoming:
+            raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
+        chosen = _choose_events(upcoming)
     logger.info("Fetching prop odds (books: %s)...", ",".join(books))
-    events = fetch_prop_odds(bookmakers=books, max_events=args.max_events)
+    events = fetch_prop_odds(bookmakers=books, max_events=args.max_events, events=chosen)
     if not events:
         raise SystemExit("No prop odds returned — check ODDS_API_KEY / season timing.")
 

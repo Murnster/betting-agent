@@ -192,10 +192,13 @@ prop grading would have crashed on first real use):
 
 Still open:
 
-- [ ] The NBA pick path has no equivalent of `attach_schedule_context()`,
-  so venue/scheduling features may arrive empty. Check against the
-  `_align()` warning before trusting NBA picks. (NHL/MLB versions moot
-  while frozen.)
+- [ ] **NBA pick path is broken and deprioritized** (user is NFL-only for
+  fall 2026). Confirmed 2026-08-19: `picks.py`'s `keep_cols` trim drops the
+  box-score columns from history, so `compute_nba_advanced_rolling()`
+  no-ops and 52 of 91 trained NBA features arrive zero-filled at pick time
+  (NFL-F8 all over again). Fix before ever trusting NBA picks: pass the
+  loader's box columns through the history trim, retrain NBA to write
+  `training_meta.json`, and verify `_align()` reports no zero-fills.
 
 ## `max_edge_pct` guardrail — decision recorded 2026-08-19
 

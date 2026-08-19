@@ -450,17 +450,21 @@ def fetch_prop_odds(
     markets: list[str] | None = None,
     bookmakers: list[str] | None = None,
     max_events: int | None = None,
+    events: list[dict] | None = None,
 ) -> list[dict]:
     """
     Fetch player prop odds. Props are only served by the per-event endpoint,
-    so this costs one API call per event.
+    so this costs one API call per event. Pass `events` (from
+    OddsAPIClient.fetch_events, a free call) to fetch odds for a chosen
+    subset instead of every upcoming event.
     """
     from betting_agent.api.odds import OddsAPIClient
 
     if markets is None:
         markets = list(MODELED_MARKETS)
     client = OddsAPIClient()
-    events = client.fetch_events(sport_key)
+    if events is None:
+        events = client.fetch_events(sport_key)
     if max_events:
         events = events[:max_events]
 

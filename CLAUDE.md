@@ -29,6 +29,8 @@ uv run python scripts/picks.py --sport NBA --bankroll 1000 --save
 
 # NFL player props (paper trading; one API call per event — cap with --max-events)
 uv run python scripts/props.py --save --max-events 5
+uv run python scripts/props.py --pick-games          # choose games interactively (saves credits)
+uv run python scripts/replay.py --random             # dress-rehearse a past week (synthetic lines)
 uv run python scripts/props_calibration.py --train-seasons 2020 2021 2022 2023 --eval-seasons 2024 2025
 
 # Ledger / recording actual bets placed at the book
