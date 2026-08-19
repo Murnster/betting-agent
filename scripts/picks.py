@@ -111,9 +111,14 @@ def main() -> None:
         logger.warning("Could not load history: %s", exc)
         hist_df = pd.DataFrame()
 
-    # For NBA/NHL, we need to map Odds API full names → abbreviations
+    # Odds API sends full club names; every loader keys history off
+    # abbreviations. Without the bridge, upcoming rows match no history at all
+    # and the model scores them on base Elo with empty rolling averages.
     team_name_map = None
-    if sport == "NBA":
+    if sport == "NFL":
+        from betting_agent.sports.nfl.loader import NFL_FULL_TO_ABBREV
+        team_name_map = NFL_FULL_TO_ABBREV
+    elif sport == "NBA":
         from betting_agent.sports.nba.loader import NBA_FULL_TO_ABBREV
         team_name_map = NBA_FULL_TO_ABBREV
     elif sport == "NHL":
@@ -125,6 +130,7 @@ def main() -> None:
 
     # Build upcoming game rows (minimal info from Odds API)
     upcoming_rows = []
+    unmapped_teams: set[str] = set()
     for g in raw_games:
         from datetime import datetime
         dt_str = g.get("commence_time", "")
@@ -140,6 +146,10 @@ def main() -> None:
         # Map team names if needed (NBA: full name → abbreviation)
         home = team_name_map.get(home_raw, home_raw) if team_name_map else home_raw
         away = team_name_map.get(away_raw, away_raw) if team_name_map else away_raw
+        if team_name_map:
+            for raw_name, mapped in ((home_raw, home), (away_raw, away)):
+                if raw_name and mapped == raw_name and raw_name not in team_name_map.values():
+                    unmapped_teams.add(raw_name)
 
         upcoming_rows.append({
             "game_id": g.get("id", ""),
@@ -166,6 +176,25 @@ def main() -> None:
         print("\nNo upcoming games parsed.\n")
         return
 
+    if unmapped_teams:
+        logger.warning(
+            "No %s abbreviation for: %s — those games will score on base Elo.",
+            sport, ", ".join(sorted(unmapped_teams)),
+        )
+
+    # NFL: fill venue/scheduling context (roof, surface, div_game, week) from
+    # the published schedule. The Odds API event carries teams and a kickoff
+    # time only, and the model is trained on all four.
+    if sport == "NFL":
+        try:
+            from betting_agent.sports.nfl.features import attach_schedule_context
+            import nflreadpy as nflread
+
+            season_sched = nflread.load_schedules(history_seasons).to_pandas()
+            upcoming_df = attach_schedule_context(upcoming_df, season_sched)
+        except Exception as exc:
+            logger.warning("Could not attach NFL schedule context: %s", exc)
+
     # Combine history + upcoming for feature computation.
     # Tag upcoming rows so we can retrieve them after sort inside build_features.
     upcoming_df["_is_upcoming"] = True
@@ -183,14 +212,17 @@ def main() -> None:
             hist_trim = hist_trim.rename(columns={"game_id": "external_id"})
             hist_trim["game_id"] = hist_trim["external_id"]
 
-        # Keep only columns the upcoming_df also has
+        # Keep only columns the upcoming_df also has, so history and upcoming
+        # rows produce identical feature columns.
         keep_cols = list(upcoming_df.columns)
         # Add any extra columns that exist in hist for normalisation
-        extra = ["game_type", "location"]
-        for c in extra:
-            if c in hist_trim.columns:
-                keep_cols.append(c)
-        hist_trim = hist_trim[[c for c in keep_cols if c in hist_trim.columns]].copy()
+        keep_cols += ["game_type", "location"]
+        seen: set[str] = set()
+        keep_cols = [
+            c for c in keep_cols
+            if c in hist_trim.columns and not (c in seen or seen.add(c))
+        ]
+        hist_trim = hist_trim[keep_cols].copy()
         hist_trim["_is_upcoming"] = False
         combined = pd.concat([hist_trim, upcoming_df], ignore_index=True)
     else:

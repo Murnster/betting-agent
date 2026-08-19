@@ -20,6 +20,73 @@ logger = logging.getLogger(__name__)
 # Playoff week identifiers used by nfl_data_py
 PLAYOFF_WEEKS = {"WildCard", "Division", "ConfChamp", "SuperBowl", "POST"}
 
+# The Odds API uses full club names ("Kansas City Chiefs"); nflreadpy schedules
+# use abbreviations ("KC"). Every pick-time path must bridge the two or the
+# upcoming rows never match history — Elo stays at base and rolling averages
+# come back empty.
+NFL_FULL_TO_ABBREV = {
+    "Arizona Cardinals": "ARI",
+    "Atlanta Falcons": "ATL",
+    "Baltimore Ravens": "BAL",
+    "Buffalo Bills": "BUF",
+    "Carolina Panthers": "CAR",
+    "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN",
+    "Cleveland Browns": "CLE",
+    "Dallas Cowboys": "DAL",
+    "Denver Broncos": "DEN",
+    "Detroit Lions": "DET",
+    "Green Bay Packers": "GB",
+    "Houston Texans": "HOU",
+    "Indianapolis Colts": "IND",
+    "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs": "KC",
+    "Las Vegas Raiders": "LV",
+    "Los Angeles Chargers": "LAC",
+    "Los Angeles Rams": "LA",
+    "Miami Dolphins": "MIA",
+    "Minnesota Vikings": "MIN",
+    "New England Patriots": "NE",
+    "New Orleans Saints": "NO",
+    "New York Giants": "NYG",
+    "New York Jets": "NYJ",
+    "Philadelphia Eagles": "PHI",
+    "Pittsburgh Steelers": "PIT",
+    "San Francisco 49ers": "SF",
+    "Seattle Seahawks": "SEA",
+    "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN",
+    "Washington Commanders": "WAS",
+}
+
+# Franchises that relocated or rebranded. nflreadpy keeps the era-correct
+# abbreviation on historical rows, so these map to the abbreviation that
+# actually appears in schedules for those seasons.
+NFL_LEGACY_FULL_TO_ABBREV = {
+    "Oakland Raiders": "OAK",
+    "San Diego Chargers": "SD",
+    "St. Louis Rams": "STL",
+    "Washington Redskins": "WAS",
+    "Washington Football Team": "WAS",
+}
+
+NFL_ABBREV_TO_FULL = {v: k for k, v in NFL_FULL_TO_ABBREV.items()}
+
+
+def nfl_team_to_abbrev(name: str | None) -> str | None:
+    """
+    Map an Odds API club name to the nflreadpy abbreviation.
+
+    Passes through values that are already abbreviations, and returns the
+    input unchanged when it matches nothing so callers can log the miss.
+    """
+    if not name:
+        return name
+    key = str(name).strip()
+    if key in NFL_ABBREV_TO_FULL:
+        return key
+    return NFL_FULL_TO_ABBREV.get(key) or NFL_LEGACY_FULL_TO_ABBREV.get(key) or key
+
 # Map nfl_data_py schedule columns → Game ORM columns
 _WEEK_MAP = {
     "WildCard": 19,

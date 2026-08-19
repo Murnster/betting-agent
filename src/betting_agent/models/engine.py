@@ -36,6 +36,7 @@ class PredictionEngine:
         self._feature_names: list[str] | None = None
         self._total_sigma: float | None = None
         self._margin_sigma: float | None = None
+        self._warned_missing: set[tuple[str, ...]] = set()
         self._loaded = False
 
     def load(self) -> bool:
@@ -75,11 +76,40 @@ class PredictionEngine:
         if not self._loaded:
             raise RuntimeError("Models not loaded. Call load() first.")
 
+    def missing_features(self, X: pd.DataFrame) -> list[str]:
+        """Model features absent from X — these get zero-filled by _align()."""
+        if not self._feature_names:
+            return []
+        present = set(X.columns)
+        return [f for f in self._feature_names if f not in present]
+
+    def _align(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Reindex to the trained feature order, warning about anything missing.
+
+        A missing column is silently zero-filled, which reads to the model as a
+        real observation of zero rather than "unknown" — the failure mode that
+        let the NFL pick path run on a third of its features. Loud beats subtle.
+        """
+        if not self._feature_names:
+            return X
+        missing = self.missing_features(X)
+        if missing and tuple(missing) not in self._warned_missing:
+            self._warned_missing.add(tuple(missing))
+            shown = ", ".join(missing[:10])
+            if len(missing) > 10:
+                shown += f", … (+{len(missing) - 10} more)"
+            logger.warning(
+                "%s: %d of %d model features missing at predict time and "
+                "zero-filled — predictions are unreliable: %s",
+                self.sport, len(missing), len(self._feature_names), shown,
+            )
+        return X.reindex(columns=self._feature_names, fill_value=0)
+
     def predict_win_prob(self, X: pd.DataFrame) -> np.ndarray:
         """Return array of home-team win probabilities (calibrated if available)."""
         self._require_loaded()
-        if self._feature_names:
-            X = X.reindex(columns=self._feature_names, fill_value=0)
+        X = self._align(X)
         dmat = xgb.DMatrix(X, feature_names=list(X.columns))
         raw_probs = self._classifier.predict(dmat)
         if self._calibrator is not None:
@@ -93,8 +123,7 @@ class PredictionEngine:
     def predict_scores(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """Return (home_scores, away_scores) arrays."""
         self._require_loaded()
-        if self._feature_names:
-            X = X.reindex(columns=self._feature_names, fill_value=0)
+        X = self._align(X)
         home_scores = self._home_reg.predict(X)
         away_scores = self._away_reg.predict(X)
         return home_scores, away_scores
