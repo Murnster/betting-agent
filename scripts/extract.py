@@ -24,6 +24,7 @@ from betting_agent.api.weather import WeatherClient
 from betting_agent.db.queries import get_game_by_external_id, get_scheduled_games, upsert_game
 from betting_agent.db.session import get_session
 from betting_agent.sports.registry import get_sport_config, available_sports
+from betting_agent.sports.teams import same_team
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -372,11 +373,14 @@ def cmd_postgame(args: argparse.Namespace) -> None:
             if game.status == "final":
                 continue
 
+            # Score payloads use Odds API club names; game rows store the
+            # canonical abbreviation, so match through the canonical form.
             home_score = away_score = None
             for team_score in s.get("scores", []) or []:
-                if team_score.get("name") == game.home_team:
+                name = team_score.get("name")
+                if same_team(game.sport, name, game.home_team):
                     home_score = int(team_score.get("score", 0))
-                elif team_score.get("name") == game.away_team:
+                elif same_team(game.sport, name, game.away_team):
                     away_score = int(team_score.get("score", 0))
 
             if home_score is not None and away_score is not None:

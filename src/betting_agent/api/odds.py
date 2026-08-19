@@ -15,6 +15,7 @@ from betting_agent.config import settings
 from betting_agent.db.models import Game, Odds
 from betting_agent.db.queries import get_game_by_external_id
 from betting_agent.db.session import get_session
+from betting_agent.sports.teams import canonical_team
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +131,15 @@ class OddsAPIClient:
                     except (ValueError, AttributeError):
                         pass
 
+                    # Store the canonical abbreviation, not the Odds API club
+                    # name — loaders seed abbreviations, and grading compares
+                    # this against the pick's team.
                     game = Game(
                         sport=sport,
                         season=game_date.year if game_date else 0,
                         game_date=game_date,
-                        home_team=raw.get("home_team", ""),
-                        away_team=raw.get("away_team", ""),
+                        home_team=canonical_team(sport, raw.get("home_team", "")),
+                        away_team=canonical_team(sport, raw.get("away_team", "")),
                         status="scheduled",
                         external_id=external_id,
                     )

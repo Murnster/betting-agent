@@ -11,22 +11,45 @@ from datetime import date, datetime
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.queries import get_ungraded_picks
 from betting_agent.db.session import get_session
+from betting_agent.sports.teams import same_team
 
 logger = logging.getLogger(__name__)
 
 
-def _grade_moneyline(pick: Pick, game: Game) -> str:
+def _side_of_game(pick: Pick, game: Game, team: str) -> str | None:
+    """
+    Return "home" or "away" for the team a pick is on, or None when it matches
+    neither. Picks store Odds API club names while loader-seeded games store
+    abbreviations, so the comparison has to go through the canonical form.
+    """
+    sport = pick.sport or game.sport
+    if same_team(sport, team, game.home_team):
+        return "home"
+    if same_team(sport, team, game.away_team):
+        return "away"
+    logger.warning(
+        "Pick %s is on '%s', which matches neither %s nor %s (game %s) — "
+        "cannot grade",
+        pick.id, team, game.home_team, game.away_team, game.id,
+    )
+    return None
+
+
+def _grade_moneyline(pick: Pick, game: Game) -> str | None:
     """Win if pick_side team won outright."""
     if game.home_score is None or game.away_score is None:
         return "push"
     if game.home_score == game.away_score:
         return "push"
-    winner = game.home_team if game.home_score > game.away_score else game.away_team
-    return "win" if pick.pick_side == winner else "loss"
+    side = _side_of_game(pick, game, pick.pick_side)
+    if side is None:
+        return None
+    won = "home" if game.home_score > game.away_score else "away"
+    return "win" if side == won else "loss"
 
 
-def _grade_spread(pick: Pick, game: Game) -> str:
-    """pick_side is like 'KC Chiefs +3.5' — parse the line and evaluate."""
+def _grade_spread(pick: Pick, game: Game) -> str | None:
+    """pick_side is like 'Kansas City Chiefs +3.5' — parse the line and evaluate."""
     if game.home_score is None or game.away_score is None:
         return "push"
     try:
@@ -35,9 +58,13 @@ def _grade_spread(pick: Pick, game: Game) -> str:
         spread = float(parts[1])
     except (ValueError, IndexError):
         logger.warning("Could not parse spread pick_side: %s", pick.pick_side)
-        return "push"
+        return None
 
-    if team == game.home_team:
+    side = _side_of_game(pick, game, team)
+    if side is None:
+        return None
+
+    if side == "home":
         margin = game.home_score - game.away_score
     else:
         margin = game.away_score - game.home_score
@@ -51,36 +78,28 @@ def _grade_spread(pick: Pick, game: Game) -> str:
         return "push"
 
 
-def _grade_total(pick: Pick, game: Game) -> str:
-    """pick_side is 'over' or 'under'."""
+def _grade_total(pick: Pick, game: Game) -> str | None:
+    """pick_side is 'over 45.5' or 'under 45.5' — the line is stored inline."""
     if game.home_score is None or game.away_score is None:
         return "push"
     total = game.home_score + game.away_score
-    # Find the total_line from the associated odds row
-    # Fallback: compare against model-implied from pick data
-    # We store total_line as part of the Odds table; for now use a heuristic
-    if pick.pick_side.startswith("over"):
-        # The line is encoded in the pick description — check if total > odds implied
-        # Since we can't easily retrieve line here without extra join,
-        # store line in pick.pick_side if we can later: "over 45.5"
-        parts = pick.pick_side.split()
-        if len(parts) == 2:
-            try:
-                line = float(parts[1])
-                return "win" if total > line else ("push" if total == line else "loss")
-            except ValueError:
-                pass
+
+    parts = pick.pick_side.split()
+    side = parts[0].lower() if parts else ""
+    if side not in ("over", "under") or len(parts) != 2:
+        logger.warning("Could not parse total pick_side: %s", pick.pick_side)
+        return None
+    try:
+        line = float(parts[1])
+    except ValueError:
+        logger.warning("Could not parse total line from: %s", pick.pick_side)
+        return None
+
+    if total == line:
         return "push"
-    elif pick.pick_side.startswith("under"):
-        parts = pick.pick_side.split()
-        if len(parts) == 2:
-            try:
-                line = float(parts[1])
-                return "win" if total < line else ("push" if total == line else "loss")
-            except ValueError:
-                pass
-        return "push"
-    return "push"
+    if side == "over":
+        return "win" if total > line else "loss"
+    return "win" if total < line else "loss"
 
 
 def _calculate_pnl(pick: Pick, result: str) -> float:
@@ -105,6 +124,7 @@ def grade_picks(target_date: date | None = None) -> int:
     Returns the number of picks graded.
     """
     graded = 0
+    ungradable = 0
     with get_session() as session:
         if target_date is not None:
             # Reset all picks for the target date so they can be re-graded
@@ -135,12 +155,27 @@ def grade_picks(target_date: date | None = None) -> int:
             elif pick.bet_type == "total":
                 result = _grade_total(pick, game)
             else:
-                result = "push"
+                logger.warning(
+                    "No grader for bet_type '%s' (pick %s) — left ungraded",
+                    pick.bet_type, pick.id,
+                )
+                result = None
+
+            # None means "could not be determined". Leave the pick ungraded
+            # rather than recording a push, which would book a real bet as a
+            # break-even and quietly corrupt the ledger.
+            if result is None:
+                ungradable += 1
+                continue
 
             pick.result = result
             pick.pnl = _calculate_pnl(pick, result)
             pick.graded_at = datetime.utcnow()
             graded += 1
 
+    if ungradable:
+        logger.warning(
+            "%d picks could not be graded — see warnings above", ungradable
+        )
     logger.info("Graded %d picks", graded)
     return graded

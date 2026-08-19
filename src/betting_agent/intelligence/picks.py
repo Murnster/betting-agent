@@ -24,6 +24,7 @@ from betting_agent.intelligence.ev import (
 from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.models.engine import PredictionEngine
 from betting_agent.sports.registry import get_sport_config
+from betting_agent.sports.teams import canonical_team
 
 logger = logging.getLogger(__name__)
 
@@ -390,8 +391,10 @@ def _resolve_game_id(session, candidate: BetCandidate) -> int:
             "sport": candidate.sport,
             "season": candidate.event_date.year,
             "game_date": candidate.event_date,
-            "home_team": candidate.home_team,
-            "away_team": candidate.away_team,
+            # Canonical abbreviation, matching loader-seeded rows — grading
+            # compares the pick's team against these.
+            "home_team": canonical_team(candidate.sport, candidate.home_team),
+            "away_team": canonical_team(candidate.sport, candidate.away_team),
             "status": "scheduled",
         })
         return game.id
