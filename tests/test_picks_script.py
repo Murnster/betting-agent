@@ -61,6 +61,8 @@ def test_main_saves_picks_before_agent_validations(monkeypatch, capsys):
             return df
 
     class _Engine:
+        training_seasons: list[int] = []
+
         def load(self) -> bool:
             return True
 

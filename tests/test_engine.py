@@ -57,3 +57,19 @@ class TestAlign:
         with caplog.at_level(logging.WARNING):
             engine._align(pd.DataFrame({"a": [1], "b": [2]}))
         assert "missing" not in caplog.text
+
+
+class TestTrainingSeasons:
+    def test_empty_without_a_manifest(self):
+        engine = PredictionEngine(sport="NFL")
+        assert engine.training_seasons == []
+
+    def test_reads_seasons_from_the_manifest(self):
+        engine = PredictionEngine(sport="NFL")
+        engine._training_meta = {"seasons": [2023, 2024, 2025], "n_rows": 800}
+        assert engine.training_seasons == [2023, 2024, 2025]
+
+    def test_coerces_string_seasons(self):
+        engine = PredictionEngine(sport="NFL")
+        engine._training_meta = {"seasons": ["2024", "2025"]}
+        assert engine.training_seasons == [2024, 2025]

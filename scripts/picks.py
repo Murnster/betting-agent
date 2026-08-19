@@ -25,13 +25,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def _load_recent_history(config, history_seasons: list[int], n_games: int = 20) -> pd.DataFrame:
-    """Load recent historical games so Elo/rolling avgs have warm-up data."""
+def _load_recent_history(
+    config, history_seasons: list[int], n_games: int | None = None
+) -> pd.DataFrame:
+    """
+    Load historical games so Elo and rolling averages have warm-up data.
+
+    With n_games set, only the most recent n_games * 32 rows are kept. That
+    truncation is a last resort: Elo accumulated over a short span sits in a
+    different distribution than the one the model was trained on, so callers
+    should pass the model's own training seasons and no cap.
+    """
     loader = config.loader_cls()
     df = loader.load_schedules(history_seasons).to_pandas()
-    # Sort by game_date and take recent games for warm-up
     date_col = "game_date" if "game_date" in df.columns else "gameday"
-    df = df.sort_values(date_col).tail(n_games * 32)
+    df = df.sort_values(date_col)
+    if n_games:
+        df = df.tail(n_games * 32)
     return df
 
 
@@ -103,10 +113,26 @@ def main() -> None:
     logger.info("Filtered to %d upcoming games.", len(raw_games))
 
     # ---- Build feature rows for upcoming games ----
+    # Warm Elo and rolling averages over the same span the model was trained
+    # on, plus the current season. A shorter warm-up leaves teams closer to
+    # the base rating than anything the model saw in training.
     current_year = date.today().year
-    history_seasons = [current_year - 1, current_year]
+    trained_seasons = engine.training_seasons
+    if trained_seasons:
+        history_seasons = sorted({*trained_seasons, current_year - 1, current_year})
+        warmup_cap = None
+    else:
+        logger.warning(
+            "No training manifest in %s — falling back to a 2-season Elo "
+            "warm-up, which will not match how the model was trained. "
+            "Retrain to record it.",
+            save_dir,
+        )
+        history_seasons = [current_year - 1, current_year]
+        warmup_cap = 20
+
     try:
-        hist_df = _load_recent_history(config, history_seasons)
+        hist_df = _load_recent_history(config, history_seasons, n_games=warmup_cap)
     except Exception as exc:
         logger.warning("Could not load history: %s", exc)
         hist_df = pd.DataFrame()

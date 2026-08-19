@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -253,6 +254,21 @@ def main() -> None:
     # ---- 5. Feature importance analysis ----
     logger.info("Extracting feature importance...")
     _extract_and_save_importance(clf, home_reg, away_reg, feature_names, save_dir)
+
+    # ---- 6. Training manifest ----
+    # picks.py replays history to warm up Elo and rolling averages. Warming
+    # over a shorter span than training produces a different Elo distribution
+    # than the model was fitted on, so record what was used here.
+    meta = {
+        "sport": sport,
+        "seasons": sorted(int(s) for s in seasons),
+        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "n_rows": int(len(X)),
+        "n_features": len(feature_names),
+    }
+    with open(save_dir / "training_meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info("Training manifest saved: seasons %s", meta["seasons"])
 
     logger.info("Training complete. Models saved to %s", save_dir)
     logger.info(

@@ -4,6 +4,7 @@ Model engine: load saved models and provide a unified prediction interface.
 
 from __future__ import annotations
 
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -37,6 +38,7 @@ class PredictionEngine:
         self._total_sigma: float | None = None
         self._margin_sigma: float | None = None
         self._warned_missing: set[tuple[str, ...]] = set()
+        self._training_meta: dict | None = None
         self._loaded = False
 
     def load(self) -> bool:
@@ -55,6 +57,16 @@ class PredictionEngine:
             if cal_path.exists():
                 self._calibrator = joblib.load(cal_path)
                 logger.info("Calibrator loaded from %s", cal_path)
+
+            meta_path = d / "training_meta.json"
+            if meta_path.exists():
+                with open(meta_path) as f:
+                    self._training_meta = json.load(f)
+                logger.info(
+                    "Trained on seasons %s (%s rows)",
+                    self._training_meta.get("seasons"),
+                    self._training_meta.get("n_rows"),
+                )
 
             sigma_dict = load_sigma(d)
             if sigma_dict is not None:
@@ -147,6 +159,20 @@ class PredictionEngine:
             },
             index=X.index,
         )
+
+    @property
+    def training_seasons(self) -> list[int]:
+        """
+        Seasons this model was trained on ([] for models saved before the
+        manifest existed).
+
+        Pick time replays history to warm up Elo and rolling averages; doing
+        that over a shorter span than training leaves the model reading Elo
+        values drawn from a different distribution than it was fitted on.
+        """
+        if not self._training_meta:
+            return []
+        return [int(s) for s in self._training_meta.get("seasons", [])]
 
     def get_sigma(self) -> dict[str, float]:
         """Return empirical sigma values, falling back to sport-specific defaults."""
