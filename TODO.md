@@ -45,15 +45,61 @@ Test count went 253 → 333.
 - [x] **F5 — Elo warm-up skew.** `training_meta.json` records the training
   seasons; picks.py warms up over exactly those. Costs ~6s per run.
 
-### Phase 1 — Real-line NFL backtest (the go/no-go gate)
+### Phase 1 — Real-line NFL backtest (the go/no-go gate) — DONE 2026-08-18
 
-- [ ] Replace synthetic odds in `scripts/backtest.py` for NFL with the real
-  closing lines already in nflreadpy schedules: bet model vs `spread_line` /
-  `total_line` / `home_moneyline` at real prices (`home_spread_odds`,
-  `over_odds`, …), grade against real scores.
-- [ ] Report ROI and simulated CLV vs close, per season, walk-forward.
-- [ ] Keep the synthetic path (with its warning) for NBA until real
-  historical odds exist for it.
+Built in commit b7b71f6 (`src/betting_agent/sports/nfl/market.py` +
+`_simulate_season_real_lines` in `scripts/backtest.py`). Synthetic path kept
+for the other sports and behind `--synthetic-odds`.
+
+CLV vs close was dropped from scope: nflreadpy carries only the closing
+line, so there is no opening price to measure against. Betting *at* the
+close is the stricter test anyway.
+
+**Result — the gate says no for game markets.** 2016-2025 walk-forward,
+3,475 flat-staked bets at real closing prices:
+
+| market | bets | win% | needed | ROI |
+|---|---|---|---|---|
+| moneyline | 1032 | 47.3% | 49.7% | −5.08% |
+| spread | 1165 | 51.1% | 51.8% | −1.37% |
+| total | 1278 | 47.7% | 51.8% | −7.95% |
+| **overall** | **3475** | **48.7%** | | **−4.89%** |
+
+Every test season is negative. Reproduce with:
+
+```
+uv run python scripts/backtest.py --sport NFL --start-season 2016 \
+  --end-season 2025 --bankroll 5000 --min-train-seasons 4 --flat-stake 10
+```
+
+Read `--flat-stake` results, not Kelly ones, when judging selection skill:
+the Kelly run showed spread at +4.55% ROI on a sub-breakeven win rate,
+which was purely sizing variance.
+
+**Decisions this forces:**
+
+- [ ] Do not bet NFL game markets at closing prices with real money.
+- [x] **Investigated the 6.9% median claimed edge** with
+  `scripts/model_vs_market.py` (walk-forward 2016-2025, 1,693 games):
+
+  |  | Brier | LogLoss | Accuracy |
+  |---|---|---|---|
+  | model | 0.2334 | 0.6597 | 60.5% |
+  | market (close) | 0.2102 | 0.6075 | 66.7% |
+
+  Correlation 0.718; mean absolute gap 0.109. When the two pick opposite
+  sides, the model is right 52.0% at a 2-5% gap, 47.7% at 5-10%, and
+  **35.2% at 10%+ (349 games)**. The model gets *more wrong* as it disagrees
+  more — the exact inverse of edge. Its confident deviations are its errors.
+
+  This closes the question: no threshold tuning, market selection, or
+  guardrail change rescues the game-level model, because the disagreements
+  it is built to bet on are anti-predictive. Improving it needs better
+  information (injuries, personnel, line movement), not better filtering.
+- [ ] Re-run the same gate for NBA/NHL/MLB once real closing lines exist
+  for them; assume they fail until shown otherwise.
+- [ ] Spread is the least-bad market (−1.37%) and totals the worst
+  (−7.95%). If anything gets a second look, it is spreads.
 
 ### Phase 2 — Trustworthy ledger
 
