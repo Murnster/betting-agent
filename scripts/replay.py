@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import random
 import sys
 
@@ -186,8 +187,13 @@ def main() -> None:
         if not candidates:
             print("     no edges clear the threshold")
             continue
-        for edge, player_key, market, side, line, model_p, stake in \
-                candidates[: args.max_picks_per_game]:
+        # Same-game correlation: props in one game share a quarterback and a
+        # game script, so production scales their stakes by 1/sqrt(n). Mirror
+        # it here or the rehearsal overstates what gets risked per game.
+        slate = candidates[: args.max_picks_per_game]
+        corr = 1.0 / math.sqrt(len(slate)) if len(slate) > 1 else 1.0
+        for edge, player_key, market, side, line, model_p, raw_stake in slate:
+            stake = raw_stake * corr
             row = actuals[actuals["player_key"] == player_key]
             stat_col = models[market].stat_col
             if row.empty:
