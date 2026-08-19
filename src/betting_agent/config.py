@@ -34,6 +34,14 @@ class Settings(BaseSettings):
         description="The Odds API base URL",
     )
 
+    preferred_bookmakers: str = Field(
+        default="",
+        description=(
+            "Comma-separated Odds API bookmaker keys to price against "
+            "(e.g. 'bet365'). Empty means shop every book in the response."
+        ),
+    )
+
     # OpenWeatherMap
     weather_api_key: str = Field(default="", description="OpenWeatherMap API key")
 
@@ -124,6 +132,11 @@ class Settings(BaseSettings):
 
     # Paths
     saved_models_dir: str = Field(default="saved_models", description="Directory for saved models")
+
+    @property
+    def preferred_bookmaker_list(self) -> list[str]:
+        """preferred_bookmakers parsed into keys ([] when unset)."""
+        return [b.strip() for b in self.preferred_bookmakers.split(",") if b.strip()]
 
 
 # Module-level singleton — import `settings` everywhere

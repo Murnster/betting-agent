@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
 import pickle
 import random
 from pathlib import Path
@@ -24,16 +23,14 @@ from pathlib import Path
 import joblib
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 from betting_agent.config import settings
 from betting_agent.intelligence.ev import (
-    american_to_implied_prob,
     calculate_edge,
     calculate_total_edge,
 )
-from betting_agent.intelligence.kelly import kelly_fraction, scaled_kelly
+from betting_agent.intelligence.kelly import scaled_kelly
 from betting_agent.models.classification import train_calibrated_classifier, save_classifier
 from betting_agent.models.engine import PredictionEngine
 from betting_agent.models.regression import (

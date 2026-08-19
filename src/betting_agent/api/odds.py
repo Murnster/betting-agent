@@ -15,7 +15,7 @@ from betting_agent.config import settings
 from betting_agent.db.models import Game, Odds
 from betting_agent.db.queries import get_game_by_external_id
 from betting_agent.db.session import get_session
-from betting_agent.sports.teams import canonical_team
+from betting_agent.sports.teams import canonical_team, same_team
 
 logger = logging.getLogger(__name__)
 
@@ -223,61 +223,158 @@ class OddsAPIClient:
         logger.info("Stored %d odds rows (is_closing=%s)", count, is_closing)
         return count
 
-    def get_best_odds(self, raw_games: list[dict], home_team: str) -> dict:
+    def _quotes_for_game(self, raw: dict, bookmakers: list[str] | None) -> list[dict]:
         """
-        Extract the best (highest home_price) moneyline odds for a team
-        from a raw Odds API response. Returns dict with home/away prices.
-        """
-        best = {"home_price": None, "away_price": None, "spread_home": None, "total_line": None,
-                "over_price": None, "under_price": None,
-                "spread_home_price": None, "spread_away_price": None,
-                "fair_home_price": None, "fair_away_price": None}
+        Flatten one event's bookmakers into per-book quotes.
 
-        for raw in raw_games:
-            if raw.get("home_team") != home_team:
+        Each quote holds one book's view of every market, so a line never gets
+        separated from the price it was offered at.
+        """
+        allowed = {b.lower() for b in bookmakers} if bookmakers else None
+        home_name = raw.get("home_team")
+        away_name = raw.get("away_team")
+        quotes = []
+
+        for bookmaker in raw.get("bookmakers", []):
+            key = (bookmaker.get("key") or "").lower()
+            title = bookmaker.get("title") or key
+            if allowed and key not in allowed and title.lower() not in allowed:
                 continue
-            for bookmaker in raw.get("bookmakers", []):
-                for market in bookmaker.get("markets", []):
-                    mk = market.get("key")
-                    outcomes = market.get("outcomes", [])
+
+            q: dict[str, Any] = {"book": title, "book_key": key}
+            for market in bookmaker.get("markets", []):
+                mk = market.get("key")
+                for o in market.get("outcomes", []):
+                    name = o.get("name")
+                    price = american_to_float(o.get("price"))
+                    point = o.get("point")
+                    point = float(point) if point is not None else None
+
                     if mk == "h2h":
-                        bk_home = None
-                        bk_away = None
-                        for o in outcomes:
-                            p = american_to_float(o.get("price"))
-                            if o.get("name") == raw.get("home_team"):
-                                bk_home = p
-                                if best["home_price"] is None or (p and p > best["home_price"]):
-                                    best["home_price"] = p
-                            elif o.get("name") == raw.get("away_team"):
-                                bk_away = p
-                                if best["away_price"] is None or (p and p > best["away_price"]):
-                                    best["away_price"] = p
-                        # Track same-bookmaker pair for accurate vig removal
-                        if bk_home is not None and bk_away is not None:
-                            if best["fair_home_price"] is None or bk_home > best["fair_home_price"]:
-                                best["fair_home_price"] = bk_home
-                                best["fair_away_price"] = bk_away
+                        if name == home_name:
+                            q["ml_home"] = price
+                        elif name == away_name:
+                            q["ml_away"] = price
                     elif mk == "spreads":
-                        for o in outcomes:
-                            p = american_to_float(o.get("price"))
-                            if o.get("name") == raw.get("home_team"):
-                                pt = o.get("point")
-                                if pt is not None:
-                                    best["spread_home"] = float(pt)
-                                if best["spread_home_price"] is None or (p and p > best["spread_home_price"]):
-                                    best["spread_home_price"] = p
-                            elif o.get("name") == raw.get("away_team"):
-                                if best["spread_away_price"] is None or (p and p > best["spread_away_price"]):
-                                    best["spread_away_price"] = p
+                        if name == home_name:
+                            q["spread_home_line"] = point
+                            q["spread_home_price"] = price
+                        elif name == away_name:
+                            q["spread_away_line"] = point
+                            q["spread_away_price"] = price
                     elif mk == "totals":
-                        for o in outcomes:
-                            pt = o.get("point")
-                            if pt is not None:
-                                best["total_line"] = float(pt)
-                            p = american_to_float(o.get("price"))
-                            if o.get("name") == "Over":
-                                best["over_price"] = p
-                            elif o.get("name") == "Under":
-                                best["under_price"] = p
+                        if name == "Over":
+                            q["total_over_line"] = point
+                            q["over_price"] = price
+                        elif name == "Under":
+                            q["total_under_line"] = point
+                            q["under_price"] = price
+            quotes.append(q)
+
+        if allowed and not quotes:
+            logger.warning(
+                "No quotes from %s for %s @ %s — falling back to all books",
+                ", ".join(sorted(allowed)), away_name, home_name,
+            )
+            return self._quotes_for_game(raw, None)
+        return quotes
+
+    @staticmethod
+    def _best_quote(quotes: list[dict], price_key: str, *required: str) -> dict | None:
+        """The quote offering the best price on one side, among books that also
+        quote everything in `required` — so the paired price and line used for
+        vig removal come from the same market."""
+        eligible = [
+            q for q in quotes
+            if q.get(price_key) is not None
+            and all(q.get(k) is not None for k in required)
+        ]
+        if not eligible:
+            return None
+        return max(eligible, key=lambda q: q[price_key])
+
+    def get_best_odds(
+        self,
+        raw_games: list[dict],
+        home_team: str,
+        bookmakers: list[str] | None = None,
+        sport: str = "",
+    ) -> dict:
+        """
+        Best available price on each side, with its line and the opposing price
+        from the *same* book.
+
+        Taking the best price on one side from book A and the opposing price
+        from book B produces a two-sided market that never existed: vig removal
+        against it understates the fair probability and inflates every edge.
+        Worse, the old version paired a best price with whichever line happened
+        to be seen last, so a bet could be evaluated at -3.5 and priced at -2.5.
+
+        `bookmakers` restricts to specific books (keys or titles, e.g.
+        ["bet365"]); defaults to settings.preferred_bookmakers.
+        """
+        if bookmakers is None:
+            bookmakers = settings.preferred_bookmaker_list
+
+        quotes: list[dict] = []
+        for raw in raw_games:
+            event_home = raw.get("home_team")
+            matches = (
+                same_team(sport, event_home, home_team) if sport
+                else event_home == home_team
+            )
+            if not matches:
+                continue
+            quotes.extend(self._quotes_for_game(raw, bookmakers))
+
+        best: dict[str, Any] = {
+            "home_price": None, "away_price": None,
+            "home_pair_away_price": None, "away_pair_home_price": None,
+            "spread_home": None, "spread_home_price": None,
+            "spread_home_pair_away_price": None,
+            "spread_away": None, "spread_away_price": None,
+            "total_line": None, "over_price": None, "over_pair_under_price": None,
+            "total_under_line": None, "under_price": None,
+            "under_pair_over_price": None,
+            "books": {},
+        }
+        if not quotes:
+            return best
+
+        # Moneyline: each side priced at its best book, paired with that same
+        # book's other side for vig removal.
+        if (q := self._best_quote(quotes, "ml_home", "ml_away")):
+            best["home_price"] = q["ml_home"]
+            best["home_pair_away_price"] = q["ml_away"]
+            best["books"]["moneyline_home"] = q["book"]
+        if (q := self._best_quote(quotes, "ml_away", "ml_home")):
+            best["away_price"] = q["ml_away"]
+            best["away_pair_home_price"] = q["ml_home"]
+            best["books"]["moneyline_away"] = q["book"]
+
+        # Spread: line and both prices from one book.
+        if (q := self._best_quote(
+            quotes, "spread_home_price", "spread_home_line", "spread_away_price"
+        )):
+            best["spread_home"] = q["spread_home_line"]
+            best["spread_home_price"] = q["spread_home_price"]
+            best["spread_home_pair_away_price"] = q["spread_away_price"]
+            best["books"]["spread"] = q["book"]
+        if (q := self._best_quote(quotes, "spread_away_price", "spread_away_line")):
+            best["spread_away"] = q["spread_away_line"]
+            best["spread_away_price"] = q["spread_away_price"]
+
+        # Totals: same, per side — books hang different numbers, so the over
+        # and under evaluated here may sit on different lines.
+        if (q := self._best_quote(quotes, "over_price", "total_over_line", "under_price")):
+            best["total_line"] = q["total_over_line"]
+            best["over_price"] = q["over_price"]
+            best["over_pair_under_price"] = q["under_price"]
+            best["books"]["total_over"] = q["book"]
+        if (q := self._best_quote(quotes, "under_price", "total_under_line", "over_price")):
+            best["total_under_line"] = q["total_under_line"]
+            best["under_price"] = q["under_price"]
+            best["under_pair_over_price"] = q["over_price"]
+            best["books"]["total_under"] = q["book"]
+
         return best

@@ -150,7 +150,7 @@ def generate_picks(
         # Find best odds for this game (use Odds API name if available)
         home_odds_name = str(meta.get("home_team_odds", home))
         away_odds_name = str(meta.get("away_team_odds", away))
-        best_odds = _find_best_odds(odds_data, home_odds_name)
+        best_odds = _find_best_odds(odds_data, home_odds_name, sport=sport)
 
         win_prob = float(pred_row["win_prob"])
         pred_margin = float(pred_row["pred_margin"])
@@ -163,12 +163,17 @@ def generate_picks(
             return sentiment_scores.get(team, 0.0) * settings.sentiment_weight
 
         # ---- Moneyline ----
+        # Each side is priced at its best book and de-vigged against that same
+        # book's other side. Mixing books produces a market nobody offers and
+        # inflates the edge.
         ml_home = best_odds.get("home_price")
         ml_away = best_odds.get("away_price")
+        ml_home_pair = best_odds.get("home_pair_away_price")
+        ml_away_pair = best_odds.get("away_pair_home_price")
 
         if ml_home:
-            if ml_away:
-                edge = calculate_edge_fair(win_prob, ml_home, ml_away, pick_home=True)
+            if ml_home_pair:
+                edge = calculate_edge_fair(win_prob, ml_home, ml_home_pair, pick_home=True)
             else:
                 edge = calculate_edge(win_prob, ml_home)
             edge += _sent_adj(home)
@@ -188,8 +193,8 @@ def generate_picks(
 
         away_win_prob = 1.0 - win_prob
         if ml_away:
-            if ml_home:
-                edge = calculate_edge_fair(away_win_prob, ml_home, ml_away, pick_home=False)
+            if ml_away_pair:
+                edge = calculate_edge_fair(away_win_prob, ml_away_pair, ml_away, pick_home=False)
             else:
                 edge = calculate_edge(away_win_prob, ml_away)
             edge += _sent_adj(away)
@@ -210,7 +215,8 @@ def generate_picks(
         # ---- Spread ----
         spread_line = best_odds.get("spread_home")
         spread_home_price = best_odds.get("spread_home_price")
-        spread_away_price = best_odds.get("spread_away_price")
+        # The opposing price must come from the book quoting this line.
+        spread_away_price = best_odds.get("spread_home_pair_away_price")
         if spread_line is not None and spread_home_price:
             cover_prob, s_edge = calculate_spread_edge(
                 pred_margin, -spread_line, spread_home_price,
@@ -232,12 +238,17 @@ def generate_picks(
                 ))
 
         # ---- Total (Over/Under) ----
+        # Books hang different numbers, so each side carries its own line and
+        # its own book's opposing price.
         total_line = best_odds.get("total_line")
         over_price = best_odds.get("over_price")
+        over_pair_under = best_odds.get("over_pair_under_price")
+        under_line = best_odds.get("total_under_line")
         under_price = best_odds.get("under_price")
+        under_pair_over = best_odds.get("under_pair_over_price")
 
         if total_line and over_price:
-            over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=under_price, sigma=total_sigma)
+            over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=over_pair_under, sigma=total_sigma)
             o_edge += (_sent_adj(home) + _sent_adj(away)) / 2
             if o_edge >= settings.min_edge_pct and _passes_guardrails(o_edge, over_price, over_prob, "total"):
                 implied = american_to_implied_prob(over_price)
@@ -253,8 +264,8 @@ def generate_picks(
                     extra={"total_line": total_line},
                 ))
 
-        if total_line and under_price:
-            under_prob, u_edge = calculate_total_edge(pred_total, total_line, under_price, "under", other_odds=over_price, sigma=total_sigma)
+        if under_line and under_price:
+            under_prob, u_edge = calculate_total_edge(pred_total, under_line, under_price, "under", other_odds=under_pair_over, sigma=total_sigma)
             u_edge += (_sent_adj(home) + _sent_adj(away)) / 2
             if u_edge >= settings.min_edge_pct and _passes_guardrails(u_edge, under_price, under_prob, "total"):
                 implied = american_to_implied_prob(under_price)
@@ -263,11 +274,11 @@ def generate_picks(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
                     scheduled_game_date=scheduled_game_date,
-                    bet_type="total", pick_side=f"under {total_line}",
+                    bet_type="total", pick_side=f"under {under_line}",
                     model_prob=under_prob, implied_prob=implied, edge=u_edge,
                     odds=under_price, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,
-                    extra={"total_line": total_line},
+                    extra={"total_line": under_line},
                 ))
 
     # Dedup per actual game, not the temporary integer game_id placeholder used
@@ -361,11 +372,11 @@ def _coerce_game_date(value, fallback: date) -> date:
     return parsed.date()
 
 
-def _find_best_odds(odds_data: list[dict], home_team: str) -> dict:
+def _find_best_odds(odds_data: list[dict], home_team: str, sport: str = "") -> dict:
     """Find best available odds for the home_team matchup in raw Odds API data."""
     from betting_agent.api.odds import OddsAPIClient
     client = OddsAPIClient()
-    return client.get_best_odds(odds_data, home_team)
+    return client.get_best_odds(odds_data, home_team, sport=sport)
 
 
 def _resolve_game_id(session, candidate: BetCandidate) -> int:

@@ -16,7 +16,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from datetime import date
 
@@ -148,12 +147,12 @@ def _run_line_movement_for_matchup(home: str, away: str, sport: str) -> None:
 
             opening = (
                 session.query(Odds)
-                .filter(Odds.game_id == game.id, Odds.is_closing == False, Odds.bet_type == "moneyline")
+                .filter(Odds.game_id == game.id, Odds.is_closing.is_(False), Odds.bet_type == "moneyline")
                 .first()
             )
             closing = (
                 session.query(Odds)
-                .filter(Odds.game_id == game.id, Odds.is_closing == True, Odds.bet_type == "moneyline")
+                .filter(Odds.game_id == game.id, Odds.is_closing.is_(True), Odds.bet_type == "moneyline")
                 .first()
             )
             if not opening or not closing:
@@ -198,12 +197,12 @@ def _run_line_movement_all(sport: str) -> None:
             for game in today_games:
                 opening = (
                     session.query(Odds)
-                    .filter(Odds.game_id == game.id, Odds.is_closing == False, Odds.bet_type == "moneyline")
+                    .filter(Odds.game_id == game.id, Odds.is_closing.is_(False), Odds.bet_type == "moneyline")
                     .first()
                 )
                 closing = (
                     session.query(Odds)
-                    .filter(Odds.game_id == game.id, Odds.is_closing == True, Odds.bet_type == "moneyline")
+                    .filter(Odds.game_id == game.id, Odds.is_closing.is_(True), Odds.bet_type == "moneyline")
                     .first()
                 )
                 if not opening or not closing:

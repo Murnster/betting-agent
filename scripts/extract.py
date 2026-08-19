@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date, datetime
+from datetime import datetime, timezone
 
 from betting_agent.api.odds import OddsAPIClient
 from betting_agent.api.weather import WeatherClient
-from betting_agent.db.queries import get_game_by_external_id, get_scheduled_games, upsert_game
+from betting_agent.db.queries import get_game_by_external_id
 from betting_agent.db.session import get_session
 from betting_agent.sports.registry import get_sport_config, available_sports
 from betting_agent.sports.teams import same_team
@@ -235,26 +235,21 @@ def cmd_closing(args: argparse.Namespace) -> None:
     # If --smart is used, filter games starting within the next window (e.g. 2 hours)
     if getattr(args, "smart", False):
         filtered_games = []
-        now = datetime.now()
         window_hours = 2
+        now_utc = datetime.now(timezone.utc)
         for g in raw_games:
             commence_time_str = g.get("commence_time", "")
             try:
-                # Odds API uses ISO format Z
+                # Odds API commence_time is ISO 8601 with a trailing Z.
                 commence_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
-                # Convert to local time for comparison if needed, or keep UTC. 
-                # Let's assume naive comparison or handle timezone.
-                # Simplest: compare UTC now with UTC commence_time
-                from datetime import timezone
-                now_utc = datetime.now(timezone.utc)
-                diff = (commence_time - now_utc).total_seconds() / 3600
-                
-                # If game starts in the next 2 hours, OR started in the last 15 mins (catch late starters)
-                if -0.25 <= diff <= window_hours:
+                hours_away = (commence_time - now_utc).total_seconds() / 3600
+                # Starting within the window, or started in the last 15 minutes
+                # (catches late kickoffs).
+                if -0.25 <= hours_away <= window_hours:
                     filtered_games.append(g)
             except (ValueError, AttributeError):
                 continue
-        
+
         if not filtered_games:
             logger.info("No games starting in the next %d hours. Skipping.", window_hours)
             return
@@ -292,12 +287,12 @@ def cmd_closing(args: argparse.Namespace) -> None:
             for game in today_games:
                 opening = (
                     session.query(Odds)
-                    .filter(Odds.game_id == game.id, Odds.is_closing == False, Odds.bet_type == "moneyline")
+                    .filter(Odds.game_id == game.id, Odds.is_closing.is_(False), Odds.bet_type == "moneyline")
                     .first()
                 )
                 closing = (
                     session.query(Odds)
-                    .filter(Odds.game_id == game.id, Odds.is_closing == True, Odds.bet_type == "moneyline")
+                    .filter(Odds.game_id == game.id, Odds.is_closing.is_(True), Odds.bet_type == "moneyline")
                     .first()
                 )
                 if not opening or not closing:
