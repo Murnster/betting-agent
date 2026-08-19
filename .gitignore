@@ -23,6 +23,7 @@ saved_models/
 
 # Backtest output
 backtest_results.csv
+backtest_bets.csv
 equity_curve.png
 
 # LibreOffice lock files
