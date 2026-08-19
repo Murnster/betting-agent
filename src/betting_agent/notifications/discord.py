@@ -19,7 +19,12 @@ from typing import Any
 
 import requests
 
-from betting_agent.intelligence.picks import BetCandidate, _pick_label, _confidence_stars
+from betting_agent.intelligence.picks import (
+    BetCandidate,
+    _confidence_stars,
+    _market_label,
+    _pick_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,8 +248,16 @@ def _build_results_embed(
             pnl_str = f"+${pnl_val:,.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):,.2f}"
             matchup = f"{d['away_team']} @ {d['home_team']}"
             odds_str = f"{d['odds']:+d}" if d["odds"] else ""
+            if d.get("bet_type") == "prop" and d.get("player"):
+                market = _market_label(d.get("market"))
+                line_val = d.get("line")
+                line_str = f" {line_val:g}" if line_val is not None else ""
+                bet_desc = (f"{d['player']} {market} "
+                            f"{d['pick_side']}{line_str}")
+            else:
+                bet_desc = f"{d['pick_side']} {d['bet_type'].title()}"
             lines.append(
-                f"`{result_tag}`  {d['pick_side']} {d['bet_type'].title()} ({odds_str}) "
+                f"`{result_tag}`  {bet_desc} ({odds_str}) "
                 f"\u2014 {matchup} \u2014 {pnl_str}"
             )
 

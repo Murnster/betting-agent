@@ -14,6 +14,9 @@ Usage:
     uv run python scripts/props.py --max-events 5      # cap API spend
     uv run python scripts/props.py --pick-games        # choose games first
     uv run python scripts/props.py --suggest 3         # auto-pick 3 hottest games
+    uv run python scripts/props.py --today --save      # daily cron: today's slate only,
+                                                       # off-days exit free. Combine with
+                                                       # --suggest N to cap credits.
 """
 
 from __future__ import annotations
@@ -157,6 +160,30 @@ def _nfl_week(event_date: date, season: int) -> int:
     return max(1, min(22, days // 7 + 1))
 
 
+def _events_commencing_today(events: list[dict]) -> list[dict]:
+    """
+    Games whose kickoff falls on the LOCAL calendar day.
+
+    commence_time is UTC, and Sunday Night Football at 8:20pm ET is already
+    Monday in UTC — filtering on the raw string would misfile every primetime
+    game. This is what makes a dumb daily cron job schedule-aware: Thursday,
+    Saturday, Sunday, and Monday slates all match on their own day, and
+    off-days return nothing (no credits spent).
+    """
+    today = datetime.now().astimezone().date()
+    out = []
+    for e in events:
+        try:
+            kickoff = datetime.fromisoformat(
+                e.get("commence_time", "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if kickoff.astimezone().date() == today:
+            out.append(e)
+    return out
+
+
 def _deduplicate_by_player(candidates: list[BetCandidate]) -> list[BetCandidate]:
     """
     One pick per player per slate — keep the highest-edge market.
@@ -286,11 +313,30 @@ def main() -> None:
                         help="Rank upcoming games by expected prop edges (free "
                              "pre-screen) and fetch odds for only the top N "
                              "(~2 credits per game)")
+    parser.add_argument("--today", action="store_true",
+                        help="Only games kicking off today (local time). Made "
+                             "for a daily cron job: off-days exit immediately "
+                             "with no credits spent, Saturday slates and "
+                             "primetime games are caught on their own day")
     args = parser.parse_args()
 
     bankroll = args.bankroll or settings.starting_bankroll
     min_edge = args.min_edge
     season = _current_nfl_season(date.today())
+
+    # The free events call comes BEFORE model fitting: on an off-day a
+    # --today cron run exits here in seconds, without downloading stats.
+    upcoming = None
+    if args.pick_games or args.suggest or args.today:
+        from betting_agent.api.odds import OddsAPIClient
+        upcoming = OddsAPIClient().fetch_events("americanfootball_nfl")
+        if not upcoming:
+            raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
+        if args.today:
+            upcoming = _events_commencing_today(upcoming)
+            if not upcoming:
+                print("No NFL games today — nothing fetched, no credits spent.")
+                return
 
     logger.info("Loading player stats (%s-%s)...", season - 2, season)
     stats = load_player_stats([season - 2, season - 1, season])
@@ -305,20 +351,18 @@ def main() -> None:
 
     books = settings.preferred_bookmaker_list or ["bet365"]
     chosen = None
-    if args.pick_games or args.suggest:
-        from betting_agent.api.odds import OddsAPIClient
-        upcoming = OddsAPIClient().fetch_events("americanfootball_nfl")
-        if not upcoming:
-            raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
+    if upcoming is not None:
         ranked = rank_events_by_model_heat(upcoming, models, history, season)
-        if args.suggest and not args.pick_games:
+        if args.suggest:
             chosen = [e for e, _, _ in ranked[: args.suggest]]
             print(f"\nSuggested games (top {len(chosen)} by expected prop edges):")
             for e, n_edges, heat in ranked[: args.suggest]:
                 print(f"  {e.get('away_team', '?')} @ {e.get('home_team', '?')}"
                       f"  edges={n_edges}  heat={heat:+.2f}")
-        else:
+        elif args.pick_games:
             chosen = _choose_events(ranked)
+        else:
+            chosen = upcoming  # --today alone: every game on today's slate
     logger.info("Fetching prop odds (books: %s)...", ",".join(books))
     events = fetch_prop_odds(bookmakers=books, max_events=args.max_events, events=chosen)
     if not events:
@@ -343,6 +387,19 @@ def main() -> None:
     if args.save:
         save_picks_to_db(candidates)
         print("Saved to picks table (bet_type='prop').")
+
+    # On an unattended box (cron), Discord is the only way the picks get seen.
+    if settings.discord_enabled:
+        try:
+            from betting_agent.notifications.discord import (
+                is_discord_configured,
+                send_picks_to_discord,
+            )
+            if is_discord_configured("NFL", "PICKS"):
+                logger.info("Sending prop picks to Discord...")
+                send_picks_to_discord(candidates, bankroll, "NFL")
+        except Exception as exc:
+            logger.warning("Discord notification failed: %s", exc)
 
 
 if __name__ == "__main__":

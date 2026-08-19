@@ -522,8 +522,17 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
         )
 
 
+def _market_label(market: str | None) -> str:
+    """'player_reception_yds' → 'reception yds'."""
+    return (market or "").removeprefix("player_").replace("_", " ")
+
+
 def _pick_label(pick: BetCandidate) -> str:
     """Build a human-readable label for a pick (e.g. 'OVER 215.5', 'WAS +14.5')."""
+    if pick.bet_type == "prop":
+        line = f" {pick.line:g}" if pick.line is not None else ""
+        return (f"{pick.player or '?'} {_market_label(pick.market)} "
+                f"{pick.pick_side.upper()}{line}")
     if pick.bet_type == "total":
         return pick.pick_side.upper()
     if pick.bet_type == "spread":

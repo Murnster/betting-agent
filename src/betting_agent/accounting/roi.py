@@ -109,6 +109,9 @@ def get_graded_picks_detail(
             "pnl": pick.pnl or 0.0,
             "home_team": game.home_team,
             "away_team": game.away_team,
+            "player": pick.player,
+            "market": pick.market,
+            "line": pick.line,
         }
         for pick, game in rows
     ]

@@ -269,6 +269,62 @@ class TestRankEventsByModelHeat:
         assert ranked[0][1] == 0
 
 
+class TestEventsCommencingToday:
+    """The --today filter that makes a daily cron job schedule-aware."""
+
+    @staticmethod
+    def _event(local_dt):
+        from datetime import timezone
+        utc = local_dt.astimezone(timezone.utc)
+        return {"commence_time": utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "home_team": "KC", "away_team": "BUF"}
+
+    def test_keeps_only_local_today(self):
+        from datetime import datetime, timedelta
+        now = datetime.now().astimezone()
+        today_game = self._event(now.replace(hour=13, minute=0))
+        thursday_game = self._event(now + timedelta(days=4))
+        out = props_script._events_commencing_today([today_game, thursday_game])
+        assert out == [today_game]
+
+    def test_late_local_kickoff_still_counts_as_today(self):
+        # SNF at 8:20pm local is already tomorrow in UTC — must still match.
+        from datetime import datetime
+        now = datetime.now().astimezone()
+        snf = self._event(now.replace(hour=20, minute=20))
+        assert props_script._events_commencing_today([snf]) == [snf]
+
+    def test_malformed_commence_time_is_dropped(self):
+        assert props_script._events_commencing_today(
+            [{"commence_time": "not-a-date"}, {"commence_time": ""}]
+        ) == []
+
+
+class TestPropPickLabels:
+    def test_prop_label_names_player_market_side_line(self):
+        from betting_agent.intelligence.picks import _pick_label
+        c = _cand("Travis Kelce", "player_reception_yds", 0.16)
+        c.line = 55.5
+        c.pick_side = "under"
+        assert _pick_label(c) == "Travis Kelce reception yds UNDER 55.5"
+
+    def test_results_embed_names_the_player(self):
+        from betting_agent.notifications.discord import _build_results_embed
+        embed = _build_results_embed(
+            {"total_bets": 1, "wins": 1, "losses": 0, "pushes": 0,
+             "win_rate_pct": 100.0, "total_pnl": 2.27, "roi_pct": 90.9,
+             "avg_edge_pct": 12.0},
+            "NFL",
+            pick_details=[{
+                "result": "win", "pnl": 2.27, "odds": -110,
+                "pick_side": "under", "bet_type": "prop",
+                "player": "Travis Kelce", "market": "player_receptions",
+                "line": 4.5, "home_team": "KC", "away_team": "BUF",
+            }],
+        )
+        assert "Travis Kelce receptions under 4.5" in embed["description"]
+
+
 class TestFinalizeNflGames:
     """props.py writes games as 'scheduled'; grading needs them 'final'."""
 
