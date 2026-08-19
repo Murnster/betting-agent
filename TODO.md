@@ -187,6 +187,14 @@ soft median lines and is NOT a forecast — the comparison is the point.
   confidence (the 25%+ bucket claims 77% and delivers 65%). The floors cover
   it, but a per-projection uncertainty signal (games played, role stability)
   would beat a global isotonic map. Revisit if paper trading confirms it.
+  - Tested and REJECTED (2026-08-19): capping claimed p at 0.72-0.80 —
+    Kelly ROI on the 7,504-pick eval was flat-to-slightly-worse, because the
+    80%+ bucket, though overconfident (claims 84.5%), still realizes 68.9%,
+    the best of any bucket. Probability shrinkage (λ=0.7-0.8 + refilter) is
+    algebraically identical to raising the floors: +3.6pp ROI per bet but
+    28% fewer picks and lower total profit. A two-week replay showing 50%
+    at 80%+ was n=10 noise. Leave selection as is; do NOT re-add a cap
+    without new evidence from live lines.
 
 - [ ] **Paper-trade 4–6 weeks once the 2026 season starts (September).**
   Run `props.py --save` 1-2×/week, `grade.py` after each slate, judge with

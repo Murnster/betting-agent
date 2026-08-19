@@ -175,6 +175,100 @@ class TestGeneratePropCandidates:
         assert self._generate(models, min_edge=0.05)
 
 
+class TestRankEventsByModelHeat:
+    """The free pre-screen that decides which games are worth paid odds calls."""
+
+    class _Model:
+        """Stub with a per-player fixed P(under)."""
+
+        stat_col = "receptions"
+
+        def __init__(self, p_under_by_player):
+            self._p = p_under_by_player
+
+        def project(self, player_key, season, week, opponent=None):
+            p = self._p.get(player_key)
+            if p is None:
+                return None
+
+            class _P:
+                def prob_over(self, line):
+                    return 1.0 - p
+
+                def prob_under(self, line):
+                    return p
+
+            return _P()
+
+    def _history(self):
+        # Two players, five recent games each; t=202601 keeps them "active"
+        # for a week-2 event (asof 202602, cutoff 202599).
+        rows = []
+        for pk, team, rec in (("hot guy", "KC", 4), ("meh guy", "MIA", 4)):
+            for t in range(202501, 202506):
+                rows.append({"player_key": pk, "team": team, "t": t, "receptions": rec})
+            rows.append({"player_key": pk, "team": team, "t": 202601, "receptions": rec})
+        return pd.DataFrame(rows)
+
+    def _event(self, home, away):
+        return {"home_team": home, "away_team": away,
+                "commence_time": "2026-09-13T17:00:00Z"}
+
+    def test_game_with_an_edge_ranks_above_game_without(self):
+        models = {"player_receptions": self._Model(
+            # 0.75 → 25% edge (clears the 10% floor); 0.52 → 2% (doesn't).
+            {"hot guy": 0.75, "meh guy": 0.52}
+        )}
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Miami Dolphins", "New York Jets"),
+             self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, self._history(), season=2026,
+        )
+        (top, n_top, heat_top), (bottom, n_bottom, heat_bottom) = ranked
+        assert top["home_team"] == "Kansas City Chiefs"
+        assert n_top == 1 and heat_top == pytest.approx(0.25)
+        assert n_bottom == 0 and heat_bottom == 0.0
+
+    def test_player_counted_once_across_markets(self):
+        class _YdsModel(self._Model):
+            stat_col = "receiving_yards"
+
+        hist = self._history()
+        hist["receiving_yards"] = 40.0
+        models = {
+            # 25% edge on receptions, 20% on yards — heat keeps the best only.
+            "player_receptions": self._Model({"hot guy": 0.75}),
+            "player_reception_yds": _YdsModel({"hot guy": 0.70}),
+        }
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, hist, season=2026,
+        )
+        _, n_edges, heat = ranked[0]
+        assert n_edges == 1
+        assert heat == pytest.approx(0.25)
+
+    def test_inactive_player_is_ignored(self):
+        hist = self._history()
+        # "hot guy" last seen in week 5 of the PREVIOUS season — not quotable.
+        hist = hist[~((hist["player_key"] == "hot guy") & (hist["t"] == 202601))]
+        models = {"player_receptions": self._Model({"hot guy": 0.75})}
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, hist, season=2026,
+        )
+        assert ranked[0][1] == 0
+
+    def test_lopsided_probability_is_not_heat(self):
+        # A book wouldn't hang -110/-110 on a 90/10 proposition.
+        models = {"player_receptions": self._Model({"hot guy": 0.90})}
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, self._history(), season=2026,
+        )
+        assert ranked[0][1] == 0
+
+
 class TestFinalizeNflGames:
     """props.py writes games as 'scheduled'; grading needs them 'final'."""
 

@@ -13,6 +13,7 @@ Usage:
     uv run python scripts/props.py --save              # log to picks table
     uv run python scripts/props.py --max-events 5      # cap API spend
     uv run python scripts/props.py --pick-games        # choose games first
+    uv run python scripts/props.py --suggest 3         # auto-pick 3 hottest games
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from betting_agent.sports.nfl.props import (
     PROP_EDGE_FLOORS,
     edge_floor,
     ReceivingPropsModel,
+    book_proxy_line,
     build_receiving_history,
     fetch_prop_odds,
     load_player_stats,
@@ -60,15 +62,82 @@ def _pair_outcomes(market: dict) -> dict[tuple[str, float], dict[str, dict]]:
     return pairs
 
 
-def _choose_events(events: list[dict]) -> list[dict]:
+def rank_events_by_model_heat(
+    events: list[dict],
+    models: dict[str, ReceivingPropsModel],
+    history,
+    season: int,
+) -> list[tuple[dict, int, float]]:
     """
-    Interactive event picker. Listing events is a free API call; the paid
-    per-event odds calls only happen for what gets chosen here.
+    Free pre-screen: score each upcoming game by the prop edges the models
+    expect at trailing-median proxy lines, before any paid odds call.
+
+    Returns [(event, n_players_clearing_a_floor, summed_best_edges)] sorted
+    hottest first. The proxy line is our own trailing median, not the book's
+    line, so heat is a where-to-look signal — the real edges are computed
+    against real prices after the per-event fetch.
     """
-    print("\nUpcoming games:")
-    for i, e in enumerate(events, 1):
+    from betting_agent.sports.teams import canonical_team
+
+    hist = history.sort_values("t")
+    recent_t = hist.groupby("player_key")["t"].max()
+    last_team = hist.groupby("player_key")["team"].last()
+    tails = {
+        model.stat_col: hist.groupby("player_key")[model.stat_col].apply(
+            lambda s: [max(0.0, v) for v in s.tail(8).tolist()]
+        )
+        for model in models.values()
+    }
+
+    ranked: list[tuple[dict, int, float]] = []
+    for event in events:
+        home_ab = canonical_team("NFL", event.get("home_team", ""))
+        away_ab = canonical_team("NFL", event.get("away_team", ""))
+        try:
+            event_date = datetime.fromisoformat(
+                event.get("commence_time", "").replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            event_date = date.today()
+        week = _nfl_week(event_date, season)
+        asof_t = season * 100 + week
+        # Only players a book would hang a line on: seen in the last 3 weeks.
+        active = recent_t[recent_t >= asof_t - 3].index
+        players = [pk for pk in active if last_team.get(pk) in (home_ab, away_ab)]
+
+        best: dict[str, float] = {}
+        for market, model in models.items():
+            for pk in players:
+                opponent = away_ab if last_team[pk] == home_ab else home_ab
+                proj = model.project(pk, season, week, opponent=opponent)
+                if proj is None:
+                    continue
+                line = book_proxy_line(tails[model.stat_col].get(pk, []), market)
+                if line is None:
+                    continue
+                p_over = proj.prob_over(line)
+                for p in (p_over, proj.prob_under(line)):
+                    if not 0.15 <= p <= 0.85:
+                        continue
+                    edge = p - 0.5
+                    if edge >= edge_floor(market, None) and edge > best.get(pk, 0.0):
+                        best[pk] = edge
+        ranked.append((event, len(best), sum(best.values())))
+    ranked.sort(key=lambda r: (r[2], r[1]), reverse=True)
+    return ranked
+
+
+def _choose_events(ranked: list[tuple[dict, int, float]]) -> list[dict]:
+    """
+    Interactive event picker, hottest games first. Listing events is a free
+    API call; the paid per-event odds calls only happen for what gets chosen.
+    """
+    print("\nUpcoming games, ranked by expected prop edges (free pre-screen):")
+    for i, (e, n_edges, heat) in enumerate(ranked, 1):
         when = e.get("commence_time", "")[:16].replace("T", " ")
-        print(f"  {i:>2}. {e.get('away_team', '?')} @ {e.get('home_team', '?')}  ({when} UTC)")
+        print(f"  {i:>2}. {e.get('away_team', '?')} @ {e.get('home_team', '?')}"
+              f"  ({when} UTC)  edges={n_edges}  heat={heat:+.2f}")
+    events = [e for e, _, _ in ranked]
     if not sys.stdin.isatty():
         return events
     raw = input("\nSelect games (e.g. 1,3,5 — or 'all'): ").strip().lower()
@@ -213,6 +282,10 @@ def main() -> None:
     parser.add_argument("--pick-games", action="store_true",
                         help="List upcoming games (free call) and choose which "
                              "to fetch prop odds for — saves API credits")
+    parser.add_argument("--suggest", type=int, default=None, metavar="N",
+                        help="Rank upcoming games by expected prop edges (free "
+                             "pre-screen) and fetch odds for only the top N "
+                             "(~2 credits per game)")
     args = parser.parse_args()
 
     bankroll = args.bankroll or settings.starting_bankroll
@@ -232,12 +305,20 @@ def main() -> None:
 
     books = settings.preferred_bookmaker_list or ["bet365"]
     chosen = None
-    if args.pick_games:
+    if args.pick_games or args.suggest:
         from betting_agent.api.odds import OddsAPIClient
         upcoming = OddsAPIClient().fetch_events("americanfootball_nfl")
         if not upcoming:
             raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
-        chosen = _choose_events(upcoming)
+        ranked = rank_events_by_model_heat(upcoming, models, history, season)
+        if args.suggest and not args.pick_games:
+            chosen = [e for e, _, _ in ranked[: args.suggest]]
+            print(f"\nSuggested games (top {len(chosen)} by expected prop edges):")
+            for e, n_edges, heat in ranked[: args.suggest]:
+                print(f"  {e.get('away_team', '?')} @ {e.get('home_team', '?')}"
+                      f"  edges={n_edges}  heat={heat:+.2f}")
+        else:
+            chosen = _choose_events(ranked)
     logger.info("Fetching prop odds (books: %s)...", ",".join(books))
     events = fetch_prop_odds(bookmakers=books, max_events=args.max_events, events=chosen)
     if not events:
