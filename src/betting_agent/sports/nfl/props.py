@@ -15,8 +15,10 @@ that position relative to league average.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 
 import nflreadpy as nfl
@@ -56,6 +58,53 @@ def pseudo_lines(market: str, mean: float) -> list[float]:
         return [round(mean) + off for off in RECEPTION_OFFSETS if round(mean) + off > 0]
     lines = [round(mean * m * 2) / 2 for m in YARDS_MULTIPLIERS]
     return [ln + 0.5 if ln == int(ln) else ln for ln in lines if ln > 0]
+
+
+#: Per-market edge floors, set from the walk-forward pick diagnostic (2020-23
+#: train, 2024-25 eval). Realized hit rate rises monotonically with the floor
+#: in both markets, and receiving yards runs ~5pp worse than receptions at
+#: every floor with a wider overconfidence gap, so it carries the stricter
+#: floor. Both sit above the ~4.6-6.0pp residual overconfidence measured after
+#: recalibration, so the floor is real cushion rather than drift.
+PROP_EDGE_FLOORS = {
+    "player_receptions": 0.10,
+    "player_reception_yds": 0.15,
+}
+DEFAULT_EDGE_FLOOR = 0.10
+
+
+def edge_floor(market: str, override: float | None = None) -> float:
+    """Edge a prop must clear. `override` (CLI --min-edge) wins when given."""
+    if override is not None:
+        return override
+    return PROP_EDGE_FLOORS.get(market, DEFAULT_EDGE_FLOOR)
+
+
+#: Smallest line worth treating as quotable — books don't hang numbers below
+#: these, so lines under them are noise for both calibration and betting.
+MIN_QUOTABLE_LINE = {"player_receptions": 1.5, "player_reception_yds": 10.0}
+
+
+def book_proxy_line(prior_values: list[float], market: str) -> float | None:
+    """
+    Approximate the number a book would hang: the player's trailing median,
+    quoted to a half point.
+
+    Books price close to recent central tendency, which sits systematically
+    ABOVE our shrunk projection. Calibrating only on offsets around our own
+    mean therefore trains the probability map in a region real lines rarely
+    occupy — this gives us the realistic region as well.
+    """
+    if not prior_values:
+        return None
+    med = float(np.median(prior_values[-8:]))
+    if market == "player_receptions":
+        line = float(int(med)) + 0.5
+    else:
+        line = round(med * 2) / 2
+        if line == int(line):
+            line += 0.5
+    return line if line >= MIN_QUOTABLE_LINE.get(market, 0.0) else None
 
 _SUFFIXES = re.compile(r"\s+(jr|sr|ii|iii|iv|v)\.?$")
 
@@ -230,14 +279,27 @@ class ReceivingPropsModel:
         if len(rows) > sample:
             rows = rows.sample(sample, random_state=0)
 
+        # Per-player prior-game series, so each cached row can carry the line a
+        # book would have hung on it.
+        series: dict[str, tuple[list[int], list[float]]] = defaultdict(lambda: ([], []))
+        ordered = self.history.sort_values("t")
+        for pk, t, val in ordered[["player_key", "t", self.stat_col]].itertuples(index=False):
+            ts, vs = series[pk]
+            ts.append(int(t))
+            vs.append(max(0.0, float(val)) if pd.notna(val) else 0.0)
+
         # Project once per row; retuning only changes the distribution shape,
-        # so cache (mean, position, actual) and rebuild distributions per k.
+        # so cache (mean, position, actual, book_line) and rebuild
+        # distributions per k.
         cached = []
         for _, g in rows.iterrows():
             proj = self.project(g["player_key"], int(g["season"]), int(g["week"]))
             if proj is not None:
                 actual = max(0.0, float(g[self.stat_col]))
-                cached.append((proj.mean, g["position"], actual))
+                ts, vs = series[g["player_key"]]
+                cut = bisect.bisect_left(ts, int(g["season"]) * 100 + int(g["week"]))
+                book_line = book_proxy_line(vs[:cut], self.market)
+                cached.append((proj.mean, g["position"], actual, book_line))
         if len(cached) < 200:
             logger.warning("tune_dispersion: only %d usable rows — keeping defaults",
                            len(cached))
@@ -246,7 +308,7 @@ class ReceivingPropsModel:
         if self.market == "player_reception_yds":
             df = pd.DataFrame(
                 [(mean, np.log(actual + YARDS_SHIFT) - np.log(mean + YARDS_SHIFT))
-                 for mean, _, actual in cached],
+                 for mean, _, actual, _ in cached],
                 columns=["mean", "res"],
             )
             df["bin"] = pd.qcut(df["mean"], 4, duplicates="drop")
@@ -259,11 +321,11 @@ class ReceivingPropsModel:
             if self.market == "player_receptions":
                 # Proper score: mean NB log-pmf of the actual counts.
                 ll = 0.0
-                for mean, position, actual in cached:
+                for mean, position, actual, _ in cached:
                     ll += self._make_dist(mean, position, k).logpmf(round(actual))
                 return -ll
             in50 = in80 = 0
-            for mean, position, actual in cached:
+            for mean, position, actual, _ in cached:
                 dist = self._make_dist(mean, position, k)
                 if dist.ppf(0.25) <= actual <= dist.ppf(0.75):
                     in50 += 1
@@ -283,11 +345,17 @@ class ReceivingPropsModel:
         from sklearn.isotonic import IsotonicRegression
 
         raw_p, hits = [], []
-        for mean, position, actual in cached:
+        for mean, position, actual, book_line in cached:
             dist = self._make_dist(mean, position, self.dispersion_scale)
             proj = Projection(player="", market=self.market, mean=mean,
                               games=0, _dist=dist)
-            for line in pseudo_lines(self.market, mean):
+            lines = list(pseudo_lines(self.market, mean))
+            # The book-proxy line is where we actually bet, so it must be in
+            # the calibration sample; weight it up so the fit is anchored
+            # there rather than dominated by the offsets around our own mean.
+            if book_line is not None:
+                lines.extend([book_line] * len(lines))
+            for line in lines:
                 raw_p.append(proj._raw_over(line))
                 hits.append(float(actual > line))
         self.prob_calibrator = IsotonicRegression(

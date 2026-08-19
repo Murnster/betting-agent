@@ -32,8 +32,11 @@ from betting_agent.config import settings
 from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.sports.nfl.props import (
     MODELED_MARKETS,
+    PROP_EDGE_FLOORS,
     ReceivingPropsModel,
+    book_proxy_line,
     build_receiving_history,
+    edge_floor,
     load_player_stats,
 )
 
@@ -44,23 +47,6 @@ MARKET_LABELS = {
     "player_receptions": "receptions",
     "player_reception_yds": "receiving yds",
 }
-
-
-def synthetic_line(recent: pd.Series, market: str) -> float | None:
-    """
-    A book-like line: the player's trailing median, forced to a half point
-    the way real prop lines are quoted. Independent of our model's center.
-    """
-    if recent.empty:
-        return None
-    med = float(recent.median())
-    if market == "player_receptions":
-        line = float(int(med)) + 0.5
-    else:
-        line = round(med * 2) / 2
-        if line == int(line):
-            line += 0.5
-    return line if line > 0 else None
 
 
 def week_games(history: pd.DataFrame, season: int, week: int) -> list[tuple[str, str]]:
@@ -95,7 +81,8 @@ def main() -> None:
     parser.add_argument("--random", action="store_true", help="Pick a random completed week")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--bankroll", type=float, default=None)
-    parser.add_argument("--min-edge", type=float, default=0.05)
+    parser.add_argument("--min-edge", type=float, default=None,
+                        help=f"Override the per-market floors {PROP_EDGE_FLOORS}")
     parser.add_argument("--all-games", action="store_true", help="Skip the interactive picker")
     parser.add_argument("--max-picks-per-game", type=int, default=4)
     args = parser.parse_args()
@@ -172,13 +159,8 @@ def main() -> None:
                 recent = (
                     before[before["player_key"] == player_key][stat_col].tail(8)
                 )
-                line = synthetic_line(recent, market)
+                line = book_proxy_line([max(0.0, v) for v in recent.tolist()], market)
                 if line is None:
-                    continue
-                # Books only quote meaningful lines — skip bench-depth numbers.
-                if market == "player_receptions" and line < 1.5:
-                    continue
-                if market == "player_reception_yds" and line < 10.0:
                     continue
                 p_over = proj.prob_over(line)
                 # -110/-110 synthetic prices de-vig to 0.5 each side.
@@ -188,14 +170,18 @@ def main() -> None:
                     if not 0.15 <= model_p <= 0.85:
                         continue
                     edge = model_p - 0.5
-                    if edge < args.min_edge:
+                    if edge < edge_floor(market, args.min_edge):
                         continue
                     kf, stake = recommended_bet(model_p, -110, edge, bankroll)
                     if stake <= 0:
                         continue
                     candidates.append((edge, player_key, market, side, line, model_p, stake))
 
-        candidates.sort(reverse=True)
+        # Same policy as production: one pick per player, best market only.
+        best_per_player: dict[str, tuple] = {}
+        for cand in sorted(candidates, reverse=True):
+            best_per_player.setdefault(cand[1], cand)
+        candidates = sorted(best_per_player.values(), reverse=True)
         print(f"\n  -- {team_a} vs {team_b} --")
         if not candidates:
             print("     no edges clear the threshold")

@@ -34,6 +34,15 @@ def _grade_nfl_props(target_date: date | None) -> int:
     if not pending:
         return 0
 
+    # props.py writes its Game rows as "scheduled" (the Odds API event carries
+    # no score), and grading skips any pick whose game is not final. Fill the
+    # scores in from published schedules first, or nothing ever settles.
+    from betting_agent.sports.nfl.results import finalize_nfl_games
+
+    finalized = finalize_nfl_games(target_date=target_date)
+    if finalized:
+        print(f"Finalized {finalized} NFL games from published schedules.")
+
     from betting_agent.accounting.grader import grade_prop_picks
     from betting_agent.sports.nfl.props import make_stat_lookup
 

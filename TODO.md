@@ -145,6 +145,49 @@ residuals — always call it after `fit()`.
   columns; graded from `nfl.load_player_stats()` via
   `grade_prop_picks()` + `make_stat_lookup()` (wired into grade.py; a player
   with no stat row stays ungraded rather than guessing).
+### Phase 3.5 — Pick-selection fixes from the walk-forward pick diagnostic (2026-08-19)
+
+`scripts/props_diagnostic.py` (train 2020-23, eval 2024-25, 10,395 picks at a
+5% floor against trailing-median book-proxy lines) drove four changes. Re-run
+it after any projection/calibration change — the floors are only right while
+the numbers under them hold.
+
+- [x] **Grading blocker.** `props.py --save` writes its Game row as
+  `status="scheduled"` (an Odds API event carries no score) and
+  `grade_prop_picks` skips any pick whose game is not final, so the whole
+  paper trade would have graded ZERO picks. `sports/nfl/results.py`
+  `finalize_nfl_games()` now fills scores from nflreadpy (free, whole season)
+  and grade.py calls it before grading props. `extract.py postgame` is no
+  longer required in the weekly loop.
+- [x] **Correlated exposure.** Props never ran through
+  `_apply_same_game_correlation_adjustment`, and exposure was extreme: 19.3
+  picks/game on average, 72.8% of picks a player bet in BOTH markets, 88% of
+  those the same side, and doubled players lost both legs 27.7% of the time
+  vs 17.1% under independence. props.py now keeps one pick per player (best
+  market) and applies the same-game Kelly scaling. De-concentrating also
+  *raised* the hit rate (59.7% → 62.2%).
+- [x] **Edge floors raised and split per market.** Realized hit rate rises
+  monotonically with the floor; receiving yards runs ~5pp worse than
+  receptions at every floor. `PROP_EDGE_FLOORS` = 10% receptions / 15% yards
+  (was a flat 5%), in `sports/nfl/props.py` so props.py and replay.py share
+  them; `--min-edge` still overrides.
+- [x] **Calibrator anchored on realistic lines.** The isotonic layer was fit
+  only on pseudo-lines around our own shrunk mean, but real lines sit above
+  it, so we were betting in a region the calibrator never saw. It now also
+  trains on `book_proxy_line()` placements. Overconfidence narrowed from
+  -6.0/-7.3pp (over/under) to -4.6/-6.0pp, and receiving-yards ROI went
+  +7.5% → +11.2%. The Phase 3 gate still passes (receptions Brier 0.1920 vs
+  0.2414 naive; yards 0.2205 vs 0.2301).
+
+Net on the same eval data: **59.7% hit / +13.9% ROI → 64.2% hit / +22.6% ROI**,
+with the confidence gap down from -8.9pp to -5.4pp. Absolute ROI is against
+soft median lines and is NOT a forecast — the comparison is the point.
+
+- [ ] Residual overconfidence is still ~5pp and grows with claimed
+  confidence (the 25%+ bucket claims 77% and delivers 65%). The floors cover
+  it, but a per-projection uncertainty signal (games played, role stability)
+  would beat a global isotonic map. Revisit if paper trading confirms it.
+
 - [ ] **Paper-trade 4–6 weeks once the 2026 season starts (September).**
   Run `props.py --save` 1-2×/week, `grade.py` after each slate, judge with
   `report.py` / `bets.py ledger`. No real stakes until paper ROI and the

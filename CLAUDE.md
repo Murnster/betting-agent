@@ -31,6 +31,7 @@ uv run python scripts/picks.py --sport NBA --bankroll 1000 --save
 uv run python scripts/props.py --save --max-events 5
 uv run python scripts/props.py --pick-games          # choose games interactively (saves credits)
 uv run python scripts/replay.py --random             # dress-rehearse a past week (synthetic lines)
+uv run python scripts/props_diagnostic.py            # walk-forward pick-level backtest (sets the floors)
 uv run python scripts/props_calibration.py --train-seasons 2020 2021 2022 2023 --eval-seasons 2024 2025
 
 # Ledger / recording actual bets placed at the book
@@ -66,7 +67,9 @@ Three layers: **Extraction** (data loaders + Odds API + weather) → **Intellige
 
 ### NFL Props (Phase 3)
 
-`sports/nfl/props.py` projects receptions (negative binomial) and receiving yards (shifted lognormal, level-dependent residuals) from nflreadpy weekly stats: shrunk exponentially-weighted player means × opponent-position defense factor, with an isotonic P(over) calibration layer. Always call `tune_dispersion()` after `fit()`. Prop odds come from the per-event endpoint (`OddsAPIClient.fetch_event_odds()` — props are NOT on the sport-level `/odds` endpoint). Prop picks grade from player stats via `grade_prop_picks()`; a player missing from a published week's stats voids the pick (result `"void"`, pnl 0), while an unpublished week leaves it ungraded. Prop edge floor is 5% (`--min-edge`), fatter than game markets, to absorb residual calibration drift.
+`sports/nfl/props.py` projects receptions (negative binomial) and receiving yards (shifted lognormal, level-dependent residuals) from nflreadpy weekly stats: shrunk exponentially-weighted player means × opponent-position defense factor, with an isotonic P(over) calibration layer. Always call `tune_dispersion()` after `fit()`. Prop odds come from the per-event endpoint (`OddsAPIClient.fetch_event_odds()` — props are NOT on the sport-level `/odds` endpoint). Prop picks grade from player stats via `grade_prop_picks()`; a player missing from a published week's stats voids the pick (result `"void"`, pnl 0), while an unpublished week leaves it ungraded. **Grading finalizes NFL games itself** via `sports/nfl/results.py finalize_nfl_games()` (free, from nflreadpy) — props.py writes its Game rows as `"scheduled"` and grading requires `"final"`, so without this nothing settles.
+
+Selection policy (set by `scripts/props_diagnostic.py`, a walk-forward pick-level backtest — re-run it after any projection change): per-market edge floors in `PROP_EDGE_FLOORS` (10% receptions, 15% receiving yards; `--min-edge` overrides), one pick per player per slate (both markets on one player are near-duplicate bets), and same-game Kelly scaling. The isotonic calibrator trains on `book_proxy_line()` placements as well as pseudo-lines, because real lines sit above our shrunk projection. Residual overconfidence is ~5pp, which the floors are sized to cover.
 
 ### Multi-Sport Registry
 

@@ -28,6 +28,8 @@ from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
 from betting_agent.sports.nfl.props import (
     MODELED_MARKETS,
+    PROP_EDGE_FLOORS,
+    edge_floor,
     ReceivingPropsModel,
     build_receiving_history,
     fetch_prop_odds,
@@ -37,6 +39,7 @@ from betting_agent.sports.nfl.props import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
 
 
 def _current_nfl_season(today: date) -> int:
@@ -85,13 +88,32 @@ def _nfl_week(event_date: date, season: int) -> int:
     return max(1, min(22, days // 7 + 1))
 
 
+def _deduplicate_by_player(candidates: list[BetCandidate]) -> list[BetCandidate]:
+    """
+    One pick per player per slate — keep the highest-edge market.
+
+    Receptions and receiving yards on the same player are close to the same
+    bet: in the walk-forward diagnostic 72.8% of picks were a doubled player,
+    88% of those took the same side, and doubled players lost BOTH legs 27.7%
+    of the time against 17.1% if they were independent. Keeping only the best
+    leg also raised the realized hit rate (59.7% → 62.2%).
+    """
+    best: dict[str, BetCandidate] = {}
+    for c in sorted(candidates, key=lambda x: x.edge, reverse=True):
+        best.setdefault(normalize_player(c.player), c)
+    return list(best.values())
+
+
 def generate_prop_candidates(
     events: list[dict],
     models: dict[str, ReceivingPropsModel],
     bankroll: float,
-    min_edge: float,
+    min_edge: float | None,
     season: int,
 ) -> list[BetCandidate]:
+    from betting_agent.intelligence.picks import (
+        _apply_same_game_correlation_adjustment,
+    )
     from betting_agent.sports.teams import canonical_team
 
     candidates: list[BetCandidate] = []
@@ -137,12 +159,13 @@ def generate_prop_candidates(
                         american_to_implied_prob(under["price"]),
                     )
                     p_over = proj.prob_over(line)
+                    floor = edge_floor(key, min_edge)
                     for side, price, model_p, fair_p in (
                         ("over", over["price"], p_over, fair_over),
                         ("under", under["price"], proj.prob_under(line), fair_under),
                     ):
                         edge = model_p - fair_p
-                        if edge < min_edge:
+                        if edge < floor:
                             continue
                         kelly, bet = recommended_bet(model_p, int(price), edge, bankroll)
                         candidates.append(BetCandidate(
@@ -169,6 +192,10 @@ def generate_prop_candidates(
                                    "projection_games": proj.games,
                                    "bookmaker": book.get("key")},
                         ))
+    candidates = _deduplicate_by_player(candidates)
+    # Props in one game share a quarterback and a game script, so their
+    # outcomes move together — scale the stakes down accordingly.
+    _apply_same_game_correlation_adjustment(candidates)
     candidates.sort(key=lambda c: c.edge, reverse=True)
     return candidates
 
@@ -179,11 +206,9 @@ def main() -> None:
     parser.add_argument("--save", action="store_true", help="Persist picks to DB")
     parser.add_argument("--max-events", type=int, default=None,
                         help="Cap per-event odds calls (API credit control)")
-    # Calibration (2024-25 eval) shows ~2-3pp residual drift in P(over), so
-    # props need a fatter edge floor than game markets or the drift itself
-    # would read as edge.
-    parser.add_argument("--min-edge", type=float, default=0.05,
-                        help="Minimum prop edge (default 0.05)")
+    parser.add_argument("--min-edge", type=float, default=None,
+                        help="Override the per-market edge floors "
+                             f"(defaults: {PROP_EDGE_FLOORS})")
     parser.add_argument("--max-picks", type=int, default=10)
     parser.add_argument("--pick-games", action="store_true",
                         help="List upcoming games (free call) and choose which "
