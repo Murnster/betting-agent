@@ -102,13 +102,67 @@ def _grade_total(pick: Pick, game: Game) -> str | None:
     return "win" if total < line else "loss"
 
 
+def _grade_prop(pick: Pick, actual: float | None) -> str | None:
+    """
+    Grade an over/under prop against the player's actual stat.
+    Props store the side in pick_side ("over"/"under"), the number in
+    pick.line, and the player/market in their own columns.
+    """
+    if actual is None:
+        return None
+    if pick.line is None:
+        logger.warning("Prop pick %s has no line — cannot grade", pick.id)
+        return None
+    side = (pick.pick_side or "").strip().lower()
+    if side not in ("over", "under"):
+        logger.warning("Prop pick %s has side '%s', expected over/under", pick.id, pick.pick_side)
+        return None
+    if actual == pick.line:
+        return "push"
+    if side == "over":
+        return "win" if actual > pick.line else "loss"
+    return "win" if actual < pick.line else "loss"
+
+
+def grade_prop_picks(stat_lookup, sport: str = "NFL", target_date: date | None = None) -> int:
+    """
+    Grade ungraded prop picks using a stat lookup.
+
+    stat_lookup(player: str, market: str, game: Game) -> float | None returns
+    the player's actual stat for that game, or None when unknown (player did
+    not play, stats not yet published, unrecognised market). Unknown leaves
+    the pick ungraded — a DNP should be voided by the caller's own policy,
+    not silently booked.
+    """
+    graded = 0
+    with get_session() as session:
+        picks = get_ungraded_picks(session, pick_date=target_date)
+        for pick in picks:
+            if pick.bet_type != "prop" or pick.sport != sport:
+                continue
+            game: Game = pick.game
+            if game is None or game.status != "final":
+                continue
+            actual = stat_lookup(pick.player, pick.market, game)
+            result = _grade_prop(pick, actual)
+            if result is None:
+                continue
+            pick.result = result
+            pick.pnl = _calculate_pnl(pick, result)
+            pick.graded_at = datetime.utcnow()
+            graded += 1
+    if graded:
+        logger.info("Graded %d prop picks", graded)
+    return graded
+
+
 def _calculate_pnl(pick: Pick, result: str) -> float:
-    """Calculate P&L for a graded pick."""
+    """Calculate P&L for a graded pick, using the bet actually placed when recorded."""
     if result == "push":
         return 0.0
-    bet = pick.recommended_bet or 0.0
+    bet = pick.stake
     if result == "win":
-        odds = pick.odds
+        odds = pick.price
         if odds > 0:
             return bet * (odds / 100.0)
         else:
@@ -154,6 +208,10 @@ def grade_picks(target_date: date | None = None) -> int:
                 result = _grade_spread(pick, game)
             elif pick.bet_type == "total":
                 result = _grade_total(pick, game)
+            elif pick.bet_type == "prop":
+                # Props need player stats, not game scores — graded separately
+                # by grade_prop_picks().
+                continue
             else:
                 logger.warning(
                     "No grader for bet_type '%s' (pick %s) — left ungraded",

@@ -147,6 +147,11 @@ class Pick(Base):
     odds = Column(Integer, nullable=False)              # American odds at pick time
     kelly_fraction = Column(Float, nullable=True)
     recommended_bet = Column(Float, nullable=True)      # dollar amount
+    actual_bet = Column(Float, nullable=True)           # dollars actually staked at the book
+    actual_odds = Column(Integer, nullable=True)        # American odds actually taken
+    line = Column(Float, nullable=True)                 # spread/total/prop line at pick time
+    player = Column(String(100), nullable=True)         # prop bets: player name
+    market = Column(String(50), nullable=True)          # prop bets: Odds API market key
     bankroll_at_pick = Column(Float, nullable=True)
     result = Column(String(10), nullable=True)          # 'win'|'loss'|'push'|NULL
     closing_odds = Column(Integer, nullable=True)       # for CLV calculation
@@ -155,6 +160,18 @@ class Pick(Base):
     graded_at = Column(TIMESTAMPTZ, nullable=True)
 
     game = relationship("Game", back_populates="picks")
+
+    @property
+    def stake(self) -> float:
+        """Dollars at risk: what was actually bet, falling back to the recommendation."""
+        if self.actual_bet is not None:
+            return self.actual_bet
+        return self.recommended_bet or 0.0
+
+    @property
+    def price(self) -> int:
+        """American odds the bet pays at: actual if recorded, else pick-time odds."""
+        return self.actual_odds if self.actual_odds is not None else self.odds
 
     def __repr__(self) -> str:
         return f"<Pick game_id={self.game_id} {self.bet_type} {self.pick_side} edge={self.edge:.3f}>"

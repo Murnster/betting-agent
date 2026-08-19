@@ -72,6 +72,9 @@ class BetCandidate:
     edge: float
     odds: int
     scheduled_game_date: date | None = None
+    line: float | None = None       # spread/total/prop line
+    player: str | None = None       # prop bets: player name
+    market: str | None = None       # prop bets: Odds API market key
     kelly_fraction: float = 0.0
     recommended_bet: float = 0.0
     bankroll_at_pick: float = 0.0
@@ -420,10 +423,22 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
     """
     Persist POTD candidates to the picks table.
     Ensures Game rows exist (via external_id upsert) before inserting picks.
-    Prevents duplicates by checking if (game_id, bet_type, pick_date) already exists.
+
+    One live pick per (game, bet_type[, player, market]) key: a re-run after a
+    line move REFRESHES the existing ungraded pick (odds, edge, sizing, line)
+    instead of being dropped as a duplicate. Graded picks are settled bets and
+    are never touched — those log a skip.
     """
     if not candidates:
         return
+
+    def _key(game_id: int, c_or_p) -> tuple:
+        return (
+            game_id,
+            c_or_p.bet_type,
+            getattr(c_or_p, "player", None) or "",
+            getattr(c_or_p, "market", None) or "",
+        )
 
     with get_session() as session:
         # Resolve real DB game IDs for all candidates
@@ -434,32 +449,38 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
             except ValueError as exc:
                 logger.warning("Skipping pick: %s", exc)
 
-        # Pre-fetch existing picks for these games. Existing rows may have been
-        # written under either the historical run date or a scheduled game date,
-        # so dedupe at the game/bet-type level.
         game_ids = set(resolved_ids.values())
-
         existing_rows = (
             session.query(Pick)
-            .filter(
-                Pick.game_id.in_(game_ids),
-            )
+            .filter(Pick.game_id.in_(game_ids))
             .all()
         )
-
-        # Create set of (game_id, bet_type) that already exist.
-        existing_keys = {(r.game_id, r.bet_type) for r in existing_rows}
+        existing: dict[tuple, Pick] = {_key(r.game_id, r): r for r in existing_rows}
 
         added = 0
+        updated = 0
         skipped = 0
         for i, c in enumerate(candidates):
             if i not in resolved_ids:
                 continue
             db_game_id = resolved_ids[i]
+            key = _key(db_game_id, c)
 
-            key = (db_game_id, c.bet_type)
-            if key in existing_keys:
-                skipped += 1
+            row = existing.get(key)
+            if row is not None:
+                if row.result is not None:
+                    skipped += 1  # already settled — never rewrite history
+                    continue
+                row.pick_side = c.pick_side
+                row.model_prob = c.model_prob
+                row.implied_prob = c.implied_prob
+                row.edge = c.edge
+                row.odds = c.odds
+                row.line = c.line
+                row.kelly_fraction = c.kelly_fraction
+                row.recommended_bet = c.recommended_bet
+                row.bankroll_at_pick = c.bankroll_at_pick
+                updated += 1
                 continue
 
             pick = Pick(
@@ -472,16 +493,22 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 implied_prob=c.implied_prob,
                 edge=c.edge,
                 odds=c.odds,
+                line=c.line,
+                player=c.player,
+                market=c.market,
                 kelly_fraction=c.kelly_fraction,
                 recommended_bet=c.recommended_bet,
                 bankroll_at_pick=c.bankroll_at_pick,
             )
             session.add(pick)
-            existing_keys.add(key)
+            existing[key] = pick
             added += 1
 
-    if added > 0 or skipped > 0:
-        logger.info("Saved %d picks to DB (skipped %d duplicates)", added, skipped)
+    if added or updated or skipped:
+        logger.info(
+            "Saved %d new picks, refreshed %d ungraded, skipped %d settled",
+            added, updated, skipped,
+        )
 
 
 def _pick_label(pick: BetCandidate) -> str:

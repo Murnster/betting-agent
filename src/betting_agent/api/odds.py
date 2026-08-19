@@ -102,6 +102,33 @@ class OddsAPIClient:
         data = self._get(f"{sport_key}/odds", params)
         return data or []
 
+    def fetch_event_odds(
+        self,
+        sport_key: str,
+        event_id: str,
+        markets: list[str],
+        bookmakers: list[str] | None = None,
+    ) -> dict | None:
+        """
+        Fetch odds for one event. Player prop markets are only available
+        here, not on the sport-level /odds endpoint. Costs one API request
+        per market region; passing bookmakers narrows the response (and the
+        bill) to the books actually bet at.
+        """
+        params: dict[str, Any] = {
+            "markets": ",".join(markets),
+            "oddsFormat": "american",
+        }
+        if bookmakers:
+            params["bookmakers"] = ",".join(bookmakers)
+        else:
+            params["regions"] = "us"
+        data = self._get(f"{sport_key}/events/{event_id}/odds", params)
+        # _get returns a list for collection endpoints; this one returns a dict.
+        if isinstance(data, list):
+            return data[0] if data else None
+        return data
+
     def fetch_scores(self, sport_key: str, days_from: int = 3) -> list[dict]:
         """Fetch recent scores (for grading). days_from: how many days back."""
         data = self._get(f"{sport_key}/scores", {"daysFrom": days_from, "dateFormat": "iso"})

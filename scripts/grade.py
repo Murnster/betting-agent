@@ -20,6 +20,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def _grade_nfl_props(target_date: date | None) -> int:
+    """Grade ungraded NFL prop picks, loading player stats only when needed."""
+    from betting_agent.db.models import Pick
+    from betting_agent.db.session import get_session
+
+    with get_session() as session:
+        pending = (
+            session.query(Pick)
+            .filter(Pick.result.is_(None), Pick.bet_type == "prop", Pick.sport == "NFL")
+            .count()
+        )
+    if not pending:
+        return 0
+
+    from betting_agent.accounting.grader import grade_prop_picks
+    from betting_agent.sports.nfl.props import make_stat_lookup
+
+    year = date.today().year
+    season = year if date.today().month >= 8 else year - 1
+    lookup = make_stat_lookup([season])
+    return grade_prop_picks(lookup, sport="NFL", target_date=target_date)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Grade picks and print ROI report")
     parser.add_argument("--sport", type=str, default=None, help="Filter by sport")
@@ -35,6 +58,14 @@ def main() -> None:
     except Exception as exc:
         logger.error("Grading failed (DB may not be running): %s", exc)
         n_graded = 0
+
+    # NFL prop picks grade from player stats, not game scores.
+    try:
+        n_props = _grade_nfl_props(target_date)
+        if n_props:
+            print(f"Graded {n_props} prop picks.")
+    except Exception as exc:
+        logger.warning("Prop grading failed: %s", exc)
 
     try:
         n_clv = update_clv_for_picks()

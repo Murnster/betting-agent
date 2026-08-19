@@ -101,32 +101,56 @@ which was purely sizing variance.
 - [ ] Spread is the least-bad market (−1.37%) and totals the worst
   (−7.95%). If anything gets a second look, it is spreads.
 
-### Phase 2 — Trustworthy ledger
+### Phase 2 — Trustworthy ledger — DONE 2026-08-18
 
-- [ ] Bankroll ledger: running equity from graded P&L (a table or a view over
-  picks); `bankroll_at_pick` currently just echoes the CLI flag.
-- [ ] `actual_bet` / `actual_odds` fields on picks (default = recommended) so
-  the ledger reflects bets actually placed.
-- [ ] Weekly report (CLI + Discord embed): record, ROI, cumulative P&L, and
-  CLV hit-rate headlined.
-- [ ] Fix pick dedup: `save_picks_to_db()` keys on `(game_id, bet_type)` so
-  re-runs after a line move can never refresh a pick.
+Migration `b8c1d2e3f4a5` (applied). The ledger is a view over picks, not a
+second store: equity = starting bankroll + cumulative graded P&L, with
+stakes/prices taken from `Pick.stake`/`Pick.price` (actual over recommended).
 
-### Phase 3 — Props MVP (paper-traded)
+- [x] Bankroll ledger: `accounting/ledger.py` — `equity_curve()`,
+  `current_bankroll()`, `ledger_summary()` (peak, max drawdown). Shown in
+  `scripts/report.py` and `scripts/bets.py ledger`.
+- [x] `actual_bet` / `actual_odds` on picks; `scripts/bets.py list|set`
+  records what was actually placed at the book (stake 0 = logged, not bet).
+  Grading and ROI pay out from actual when recorded; `bets.py set` on an
+  already-graded pick rebooks its P&L.
+- [x] Report: CLV hit-rate + bankroll section added to the ROI report
+  (grade.py already pushes it to Discord).
+- [x] Dedup fixed: re-runs now refresh ungraded picks in place (odds, edge,
+  sizing, line); settled picks are never rewritten. Props key on
+  `(game_id, bet_type, player, market)`.
 
-- [ ] Start with receptions + receiving yards. Distributional player models
-  (player volume share × team volume × opponent positional defense; negative
-  binomial for counts, quantile/lognormal for yardage → P(over line)) over
-  `nfl.load_player_stats()`. Stubs exist in
-  `src/betting_agent/sports/nfl/props.py`.
-- [ ] Prop odds via Odds API per-event endpoint, filtered to bet365,
-  1–2 snapshots/week (~70 credits per full Sunday slate; free tier is
-  500/month). Verify NFL prop availability + per-call cost with a live key
-  before designing around it; evaluate SportsGameOdds/OddsPapi/PropLine if
-  credits pinch.
-- [ ] Log picks through the existing table as `bet_type="prop"`; validate
-  projection calibration against historical actuals, then paper-trade live
-  lines 4–6 weeks. No real stakes in this phase.
+### Phase 3 — Props MVP (paper-traded) — BUILT 2026-08-18, calibration PASSED
+
+Models in `sports/nfl/props.py`: negative binomial for receptions, shifted
+lognormal (level-dependent residual location/scale) for receiving yards,
+both centered on shrunk EW player means × opponent-position defense factor,
+with a final isotonic layer mapping raw P(over) to empirical over-rates.
+`tune_dispersion()` fits spread + calibrator on walk-forward training
+residuals — always call it after `fit()`.
+
+- [x] Calibration gate (`scripts/props_calibration.py`, train 2020-23, eval
+  2024-25, 10,444 player-weeks/market): both markets beat the naive-constant
+  Brier (receptions 0.1908 vs 0.2414; yards 0.2210 vs 0.2301) and sit within
+  ~3pp of the diagonal on the 0.2-0.8 bins where real lines live. Residual
+  +2-3pp under-prediction of overs on 2024-25 → props edge floor set to 5%
+  (`--min-edge` default in props.py). Interval coverage for receptions reads
+  over-nominal because discrete intervals carry point masses — judge counts
+  by the reliability table, not coverage.
+- [x] Per-event prop odds: `OddsAPIClient.fetch_event_odds()` (props are NOT
+  on the sport-level /odds endpoint), filtered to `PREFERRED_BOOKMAKERS`;
+  `scripts/props.py [--save] [--max-events N]` generates paper picks
+  (verified live against bet365 preseason lines).
+- [x] Props log as `bet_type="prop"` with structured `player`/`market`/`line`
+  columns; graded from `nfl.load_player_stats()` via
+  `grade_prop_picks()` + `make_stat_lookup()` (wired into grade.py; a player
+  with no stat row stays ungraded rather than guessing).
+- [ ] **Paper-trade 4–6 weeks once the 2026 season starts (September).**
+  Run `props.py --save` 1-2×/week, `grade.py` after each slate, judge with
+  `report.py` / `bets.py ledger`. No real stakes until paper ROI and the
+  reliability of live-line P(over) hold up.
+- [ ] Watch API credit spend: one call per event per snapshot; `--max-events`
+  caps it. Evaluate SportsGameOdds/OddsPapi/PropLine if credits pinch.
 
 ### Phase 4 — Scale what the ledger endorses
 
@@ -153,6 +177,11 @@ which was purely sizing variance.
   picks use vig-removed fair edges; align the two.
 - [ ] Freeze MLB/NHL (leave code, drop from docs/routine runs) until NFL+NBA
   are proven.
+- [ ] `db/models.py` Game defines `home_hits`/`away_hits` twice (NHL block,
+  then MLB block silently overrides it) — rename one pair with a migration.
+- [ ] Prop grading treats a DNP as "no stat row → leave ungraded" forever;
+  decide a void policy (e.g. void after stats for that week are published
+  and the player is absent).
 
 ## Tune or validate the `max_edge_pct` guardrail
 

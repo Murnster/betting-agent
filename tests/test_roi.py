@@ -14,6 +14,13 @@ class _Pick:
     edge: float
     clv: float | None = None
     sport: str = "NBA"
+    actual_bet: float | None = None
+
+    @property
+    def stake(self) -> float:
+        if self.actual_bet is not None:
+            return self.actual_bet
+        return self.recommended_bet or 0.0
 
 
 class _Query:

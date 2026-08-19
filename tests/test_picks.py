@@ -694,6 +694,8 @@ class TestGameDateSelection:
                         game_id=7,
                         bet_type="moneyline",
                         pick_date=date(2026, 1, 15),
+                        result=None,
+                        odds=-120,
                     )
                 ]
 

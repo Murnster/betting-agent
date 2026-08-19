@@ -52,10 +52,11 @@ def get_summary(
     losses = sum(1 for p in picks if p.result == "loss")
     pushes = sum(1 for p in picks if p.result == "push")
     total_pnl = sum(p.pnl or 0.0 for p in picks)
-    total_wagered = sum(p.recommended_bet or 0.0 for p in picks)
+    total_wagered = sum(p.stake for p in picks)
     avg_edge = sum(p.edge for p in picks) / total
     clv_picks = [p for p in picks if p.clv is not None]
     avg_clv = sum(p.clv for p in clv_picks) / len(clv_picks) if clv_picks else None
+    clv_hits = sum(1 for p in clv_picks if p.clv > 0)
 
     return {
         "total_bets": total,
@@ -68,6 +69,8 @@ def get_summary(
         "roi_pct": round((total_pnl / total_wagered * 100.0) if total_wagered else 0.0, 2),
         "avg_edge_pct": round(avg_edge * 100.0, 2),
         "avg_clv_pct": round(avg_clv * 100.0, 2) if avg_clv is not None else None,
+        "clv_hit_rate_pct": round(_pct(clv_hits, len(clv_picks)), 1) if clv_picks else None,
+        "clv_sample": len(clv_picks),
     }
 
 
@@ -150,6 +153,24 @@ def format_roi_report(
     ]
     if summary.get("avg_clv_pct") is not None:
         lines.append(f"  Avg CLV:      {summary['avg_clv_pct']:+.2f}%")
+    if summary.get("clv_hit_rate_pct") is not None:
+        lines.append(
+            f"  CLV hit rate: {summary['clv_hit_rate_pct']:.1f}% "
+            f"(beat the close on {summary['clv_sample']} priced picks)"
+        )
+
+    from betting_agent.accounting.ledger import ledger_summary
+    ledger = ledger_summary(sport=sport)
+    if ledger["settled_picks"]:
+        lines += [
+            "",
+            "  Bankroll:",
+            "  " + "-" * 50,
+            f"  Start ${ledger['starting_bankroll']:,.2f} → now ${ledger['current_bankroll']:,.2f} "
+            f"({ledger['total_pnl']:+,.2f})",
+            f"  Peak ${ledger['peak_equity']:,.2f}, max drawdown ${ledger['max_drawdown']:,.2f} "
+            f"over {ledger['settled_picks']} settled picks",
+        ]
 
     if breakdown:
         lines.append("")
