@@ -30,7 +30,6 @@ import pandas as pd
 from betting_agent.config import settings
 from betting_agent.intelligence.ev import (
     american_to_implied_prob,
-    calculate_edge,
     calculate_edge_fair,
     calculate_spread_edge,
     calculate_total_edge,
@@ -331,7 +330,12 @@ def _simulate_season(
         bet_side = "home" if win_prob >= 0.5 else "away"
         bet_prob = win_prob if bet_side == "home" else 1.0 - win_prob
         bet_odds = home_ml if bet_side == "home" else away_ml
-        edge = calculate_edge(bet_prob, bet_odds)
+        # Vig-removed fair edge, matching how live picks compute it — the
+        # vig-included calculate_edge() would size Kelly off a different
+        # number than the live pipeline bets on.
+        edge = calculate_edge_fair(
+            bet_prob, home_ml, away_ml, pick_home=(bet_side == "home")
+        )
 
         if edge >= settings.min_edge_pct:
             kf = scaled_kelly(bet_prob, bet_odds, edge)

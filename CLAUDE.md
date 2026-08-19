@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Automated sports betting ETL pipeline and prediction engine. Generates daily "+EV Picks of the Day" using XGBoost models, Kelly Criterion sizing, and optional Ollama sentiment analysis. Supports NFL and NBA, designed to extend to NHL+. Runs entirely on local hardware ($0-$15/month).
+Automated sports betting ETL pipeline and prediction engine. Generates "+EV Picks" using XGBoost game models, distributional NFL player-prop models, Kelly Criterion sizing, and optional Ollama sentiment analysis. Four sports are implemented (NFL, NBA, NHL, MLB) but **NHL and MLB are frozen** (`active=False` in the registry — reachable by explicit `--sport`, hidden from `available_sports()` and routine loops) until NFL+NBA are proven. The Aug 2026 real-line backtest showed the NFL game-level model cannot beat closing prices, so the live NFL strategy is **player props** (`scripts/props.py`, paper-trading from Sep 2026). Runs entirely on local hardware ($0-$15/month).
 
 Open follow-ups and deferred decisions live in `TODO.md` at the repo root — check it before starting work, and add to it rather than leaving loose ends in commit messages.
 
@@ -23,9 +23,18 @@ uv run python scripts/train.py --sport NBA --seasons 2022 2023 2024
 uv run alembic downgrade base && uv run alembic upgrade head
 # Then re-seed by training without --no-seed, or run extract.py
 
-# Picks
+# Picks (game markets)
 uv run python scripts/picks.py --sport NFL --bankroll 1000
 uv run python scripts/picks.py --sport NBA --bankroll 1000 --save
+
+# NFL player props (paper trading; one API call per event — cap with --max-events)
+uv run python scripts/props.py --save --max-events 5
+uv run python scripts/props_calibration.py --train-seasons 2020 2021 2022 2023 --eval-seasons 2024 2025
+
+# Ledger / recording actual bets placed at the book
+uv run python scripts/bets.py list
+uv run python scripts/bets.py set <pick_id> --stake 25 --odds -115
+uv run python scripts/bets.py ledger
 
 # Daily extraction (morning → closing → postgame → grade)
 uv run python scripts/extract.py morning --sport NBA
@@ -37,7 +46,7 @@ uv run python scripts/grade.py
 uv run python scripts/backtest.py --sport NFL --start-season 2019 --end-season 2023
 
 # Tests
-uv run pytest tests/ -v                 # all tests (54 tests)
+uv run pytest tests/ -v                 # all tests (391 tests)
 uv run pytest tests/test_ev.py -v       # single file
 uv run pytest tests/test_ev.py::test_name -v  # single test
 
@@ -51,7 +60,11 @@ uv add <package>
 
 ## Architecture
 
-Three layers: **Extraction** (data loaders + Odds API + weather) → **Intelligence** (features + models + EV + Kelly + sentiment) → **Accounting** (grading + CLV + ROI).
+Three layers: **Extraction** (data loaders + Odds API + weather) → **Intelligence** (features + models + EV + Kelly + sentiment + optional LLM validator in `intelligence/validator.py`) → **Accounting** (grading + CLV + ROI + bankroll ledger in `accounting/ledger.py`).
+
+### NFL Props (Phase 3)
+
+`sports/nfl/props.py` projects receptions (negative binomial) and receiving yards (shifted lognormal, level-dependent residuals) from nflreadpy weekly stats: shrunk exponentially-weighted player means × opponent-position defense factor, with an isotonic P(over) calibration layer. Always call `tune_dispersion()` after `fit()`. Prop odds come from the per-event endpoint (`OddsAPIClient.fetch_event_odds()` — props are NOT on the sport-level `/odds` endpoint). Prop picks grade from player stats via `grade_prop_picks()`; a player missing from a published week's stats voids the pick (result `"void"`, pnl 0), while an unpublished week leaves it ungraded. Prop edge floor is 5% (`--min-edge`), fatter than game markets, to absorb residual calibration drift.
 
 ### Multi-Sport Registry
 
@@ -71,7 +84,7 @@ Saved to `saved_models/<SPORT>/`: `classifier.json`, `calibrator.joblib`, `home_
 
 ## Critical Gotchas
 
-**Column normalization is mandatory for NFL data.** `nflreadpy` uses `gameday` (not `game_date`), `game_type` (not `is_playoff`), `location` (not `neutral_site`), and has no weather columns. `normalise_raw_schedules()` in `sports/nfl/features.py` handles all renames — it's called automatically by `build_nfl_features()`, but if you pass raw nflreadpy data anywhere else, you must normalize first.
+**Column normalization is mandatory for NFL data.** `nflreadpy` uses `gameday` (not `game_date`), `game_type` (not `is_playoff`), `location` (not `neutral_site`); its weather columns are `temp`/`wind`. `normalise_raw_schedules()` in `sports/nfl/features.py` handles all renames — it's called automatically by `build_nfl_features()`, but if you pass raw nflreadpy data anywhere else, you must normalize first.
 
 **OHE feature alignment.** One-hot encoding generates different columns per training run depending on which teams appear. `feature_names.pkl` captures the exact column list. At predict time, `X.reindex(columns=feature_names, fill_value=0)` ensures alignment — missing columns get zero-filled.
 
@@ -79,9 +92,11 @@ Saved to `saved_models/<SPORT>/`: `classifier.json`, `calibrator.joblib`, `home_
 
 **NBA team name bridging.** `nba_api` uses 3-letter abbreviations (`"BOS"`), the Odds API uses full names (`"Boston Celtics"`). The `NBA_ABBREV_TO_FULL` / `NBA_FULL_TO_ABBREV` dicts in `sports/nba/loader.py` handle mapping. In `picks.py`, a `home_team_odds` metadata column carries the Odds API name for odds matching while `home_team` carries the abbreviation.
 
-**Backtest uses synthetic odds.** Historical closing odds aren't available, so `_generate_market_odds()` simulates a book using league-average home win rate + Gaussian noise + 4.5% vig overround. These odds are never included as features (no leakage).
+**NFL backtests use real closing lines** (`sports/nfl/market.py` from nflreadpy schedules); other sports still use synthetic odds from `_generate_market_odds()` (model-centered + Gaussian noise + 4.5% vig, never included as features). Use `--flat-stake` results to judge selection skill — Kelly ROI on small samples is sizing variance.
 
-**Sentiment is optional.** `is_ollama_available()` is checked before any Ollama call. If unavailable, picks generate from ML alone. Sentiment adjusts edge by at most `sentiment_weight` (default 0.02).
+**Sentiment is optional.** `is_ollama_available()` is checked before any Ollama call. If unavailable, picks generate from ML alone. Sentiment shifts the model probability (by at most `sentiment_weight`, default 0.02) before the edge is computed, so edge and Kelly sizing stay consistent.
+
+**Season is sport-aware.** Use `SportConfig.season_for_date(date)` — an NFL/NBA game in January belongs to the previous year's season, and mistagging it triggers Elo's per-season mean reversion mid-season.
 
 **DB is optional for training.** `train.py --no-seed` skips DB operations. DB failures during seeding are caught and logged as warnings.
 

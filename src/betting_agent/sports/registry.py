@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable, Type
 
 import pandas as pd
@@ -32,6 +33,16 @@ class SportConfig:
     # (2-star, 3-star, 4-star, 5-star edge minimums)
     ml_edge_tiers: list[tuple[float, float]] | None = None
     # List of (implied_prob_max, min_edge) for ML guardrails
+    season_start_month: int = 1
+    # First calendar month of a new season. Games before it belong to the
+    # previous year's season (an NFL game in Jan 2027 is season 2026).
+    active: bool = True
+    # Frozen sports keep their code and stay reachable by explicit --sport,
+    # but drop out of available_sports() and routine multi-sport loops.
+
+    def season_for_date(self, d: date) -> int:
+        """Season a game on date d belongs to, respecting the season span."""
+        return d.year if d.month >= self.season_start_month else d.year - 1
 
 
 def _get_registry() -> dict[str, SportConfig]:
@@ -70,6 +81,7 @@ def _get_registry() -> dict[str, SportConfig]:
             build_features=build_nfl_features,
             split_features_targets=nfl_split,
             sport_key="americanfootball_nfl",
+            season_start_month=8,
             default_seasons=list(range(2015, 2025)),
             hist_avg_total=45.0,
             total_stdev=7.0,
@@ -80,6 +92,7 @@ def _get_registry() -> dict[str, SportConfig]:
             build_features=build_nba_features,
             split_features_targets=nba_split,
             sport_key="basketball_nba",
+            season_start_month=8,
             default_seasons=list(range(2015, 2025)),
             hist_avg_total=220.0,
             total_stdev=15.0,
@@ -96,6 +109,8 @@ def _get_registry() -> dict[str, SportConfig]:
             build_features=build_nhl_features,
             split_features_targets=nhl_split,
             sport_key="icehockey_nhl",
+            season_start_month=8,
+            active=False,  # frozen until NFL+NBA are proven
             default_seasons=list(range(2018, 2026)),
             hist_avg_total=6.0,
             total_stdev=1.5,
@@ -107,6 +122,7 @@ def _get_registry() -> dict[str, SportConfig]:
             build_features=build_mlb_features,
             split_features_targets=mlb_split,
             sport_key="baseball_mlb",
+            active=False,  # frozen until NFL+NBA are proven
             default_seasons=list(range(2021, 2026)),
             hist_avg_total=8.5,
             total_stdev=2.5,
@@ -126,6 +142,13 @@ def get_sport_config(sport: str) -> SportConfig:
     return registry[key]
 
 
-def available_sports() -> list[str]:
-    """Return list of registered sport names."""
-    return sorted(_get_registry().keys())
+def available_sports(include_frozen: bool = False) -> list[str]:
+    """
+    Return registered sport names. Frozen sports (NHL/MLB) are excluded by
+    default so routine multi-sport loops skip them; they remain reachable by
+    explicit --sport and via include_frozen=True.
+    """
+    registry = _get_registry()
+    return sorted(
+        name for name, cfg in registry.items() if include_frozen or cfg.active
+    )

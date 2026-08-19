@@ -1,5 +1,7 @@
 """Tests for NFL prop projection models and prop grading."""
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from betting_agent.accounting.grader import _calculate_pnl, _grade_prop
 from betting_agent.db.models import Pick
 from betting_agent.sports.nfl.props import (
+    DNP,
     ReceivingPropsModel,
     build_receiving_history,
     normalize_player,
@@ -137,6 +140,67 @@ class TestGradeProp:
 
     def test_missing_line_leaves_ungraded(self):
         assert _grade_prop(self._pick("over", None), 6.0) is None
+
+    def test_dnp_voids(self):
+        assert _grade_prop(self._pick("over", 5.5), DNP) == "void"
+
+    def test_void_pnl_is_zero(self):
+        pick = Pick(recommended_bet=25.0, odds=-110)
+        assert _calculate_pnl(pick, "void") == 0.0
+
+
+class TestStatLookupDnp:
+    """The DNP sentinel fires only when the week's stats are published."""
+
+    def _make_lookup(self, monkeypatch):
+        import betting_agent.sports.nfl.features as feat_mod
+        import betting_agent.sports.nfl.loader as loader_mod
+        import betting_agent.sports.nfl.props as props_mod
+
+        stats = pd.DataFrame({
+            "player_display_name": ["Teammate Guy"],
+            "season": [2025], "week": [1], "team": ["KC"],
+            "receptions": [4.0],
+        })
+        monkeypatch.setattr(props_mod, "load_player_stats", lambda seasons: stats)
+
+        sched = pd.DataFrame({
+            "home_team": ["KC", "KC"], "away_team": ["BUF", "BUF"],
+            "game_date": [pd.Timestamp("2025-09-07"), pd.Timestamp("2025-09-14")],
+            "season": [2025, 2025], "week": [1, 2],
+        })
+
+        class _FakePolars:
+            def to_pandas(self):
+                return sched
+
+        class _FakeLoader:
+            def load_schedules(self, seasons):
+                return _FakePolars()
+
+        monkeypatch.setattr(loader_mod, "NFLLoader", _FakeLoader)
+        monkeypatch.setattr(feat_mod, "normalise_raw_schedules", lambda df: df)
+        return props_mod.make_stat_lookup([2025])
+
+    def _game(self, day):
+        from types import SimpleNamespace
+        return SimpleNamespace(home_team="KC", away_team="BUF", game_date=day)
+
+    def test_player_with_row_returns_stat(self, monkeypatch):
+        lookup = self._make_lookup(monkeypatch)
+        assert lookup("Teammate Guy", "player_receptions",
+                      self._game(date(2025, 9, 7))) == 4.0
+
+    def test_published_week_without_player_is_dnp(self, monkeypatch):
+        lookup = self._make_lookup(monkeypatch)
+        assert lookup("Missing Player", "player_receptions",
+                      self._game(date(2025, 9, 7))) == DNP
+
+    def test_unpublished_week_stays_ungraded(self, monkeypatch):
+        lookup = self._make_lookup(monkeypatch)
+        # Week 2 is on the schedule but has no stat rows yet — not a DNP.
+        assert lookup("Teammate Guy", "player_receptions",
+                      self._game(date(2025, 9, 14))) is None
 
 
 class TestPnlUsesActualBet:

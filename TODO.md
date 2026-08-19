@@ -158,62 +158,58 @@ residuals — always call it after `fit()`.
   sample; expand prop markets or upgrade the odds tier (seasonal, Sep–Feb)
   only if the MVP earns it.
 
-### Housekeeping (any time)
+### Housekeeping — swept 2026-08-19
 
-- [ ] Refresh CLAUDE.md + project memory: 333 tests (not 54), four sports
-  implemented, validator subsystem, nflreadpy has weather columns.
-- [ ] `picks.py` derives `season` from the calendar year, so NFL games in
-  January/February are tagged as the wrong season — that feeds Elo's
-  per-season mean reversion. Derive the season properly per sport.
-- [ ] The NBA/NHL/MLB pick paths still have no equivalent of
-  `attach_schedule_context()`, so venue/scheduling features available for
-  those sports may still arrive empty. Check each against the
-  `_align()` warning before trusting their picks.
-- [ ] Stop writing `saved_models/*_backtest_tmp/` into the real models dir
-  (use a temp path) and delete the existing ones.
-- [ ] Sentiment adjusts `edge` but not `model_prob`, so Kelly sizes off a
-  probability inconsistent with the edge that selected the bet — reconcile.
-- [ ] Backtest sizes Kelly from vig-included `calculate_edge()` while live
-  picks use vig-removed fair edges; align the two.
-- [ ] Freeze MLB/NHL (leave code, drop from docs/routine runs) until NFL+NBA
-  are proven.
-- [ ] `db/models.py` Game defines `home_hits`/`away_hits` twice (NHL block,
-  then MLB block silently overrides it) — rename one pair with a migration.
-- [ ] Prop grading treats a DNP as "no stat row → leave ungraded" forever;
-  decide a void policy (e.g. void after stats for that week are published
-  and the player is absent).
+All done in one pass (the sweep also caught a live ImportError:
+`make_stat_lookup` imported `NFLDataLoader`, but the class is `NFLLoader` —
+prop grading would have crashed on first real use):
 
-## Tune or validate the `max_edge_pct` guardrail
+- [x] CLAUDE.md refreshed: 391 tests, four sports (NHL/MLB frozen), props +
+  ledger commands, validator/ledger in the architecture map, real-line NFL
+  backtest, nflreadpy `temp`/`wind` weather columns.
+- [x] Season is sport-aware: `SportConfig.season_for_date(date)`
+  (`season_start_month=8` for NFL/NBA/NHL); picks.py uses it, so Jan/Feb
+  games no longer trigger Elo mean reversion mid-season.
+- [x] Stale `saved_models/*_backtest_tmp/` dirs deleted (the code already
+  writes fold models to a scratch dir outside saved_models).
+- [x] Sentiment now shifts `model_prob` (clipped [0.01, 0.99]) before the
+  edge is computed, so the edge that selects the bet and the probability
+  Kelly sizes with agree.
+- [x] Synthetic backtest moneyline now uses vig-removed
+  `calculate_edge_fair()`, matching live picks. (Real-line path already did.)
+- [x] MLB/NHL frozen: `SportConfig.active=False`; `available_sports()`
+  hides them by default (`include_frozen=True` to list); explicit `--sport`
+  still works; grade.py's Discord loop skips them.
+- [x] `home_hits` collision fixed: NHL body checks renamed to
+  `home_nhl_hits`/`away_nhl_hits` (migration `c9d2e3f4a5b6`, applied);
+  `home_hits` stays MLB batting.
+- [x] Prop DNP void policy: when a week's stats are published for the
+  game's teams but the player has no row, the pick voids (result `"void"`,
+  pnl 0, stake excluded from total_wagered) — matching book settlement.
+  Unpublished week still leaves it ungraded. A name that never matches
+  nflreadpy's spelling voids too — check the void log line if a star's
+  pick voids unexpectedly.
 
-`max_edge_pct` currently hard-rejects any pick with edge > 15%, across all
-bet types (`_passes_guardrails` in `src/betting_agent/intelligence/picks.py`).
+Still open:
 
-The cap may be tighter than intended. Three pre-existing tests in
-`TestCorrelationAdjustment` were built on fixtures with moneyline edges of
-17–18% and a totals edge of ~36%, i.e. the codebase previously treated edges
-in that range as unremarkable. Those fixtures were moved into a lower band so
-the tests keep exercising dedup/sorting/`max_picks` rather than edge magnitude
-(commit 83fd4a3).
+- [ ] The NBA pick path has no equivalent of `attach_schedule_context()`,
+  so venue/scheduling features may arrive empty. Check against the
+  `_align()` warning before trusting NBA picks. (NHL/MLB versions moot
+  while frozen.)
 
-What to do:
-- Watch for `"Guardrail: rejecting pick"` warnings during normal runs. Frequent
-  firing means the cap is filtering real picks, not just pathological ones.
-- Decide whether 15% is right, or whether the cap should be per-bet-type
-  (totals and spreads can legitimately show wider edges than moneylines).
-- Consider whether a large edge should reject the pick outright or just flag
-  it for the validator to review.
+## `max_edge_pct` guardrail — decision recorded 2026-08-19
 
-## Decide the fate of the `guardrails-wip` branch
+Keep the 15% cap as-is. Game markets are not being bet with real money
+(Phase 1 verdict), so the cap only protects paper runs; and a game-market
+edge over 15% is, per the model-vs-market diagnostic, almost certainly model
+error rather than value. Props don't route through `_passes_guardrails` —
+their protection is the 5% edge floor plus paper trading. Revisit only if a
+game market ever comes back into scope.
 
-Local-only branch `guardrails-wip` (`1bacf2b`) holds classifier changes that
-were deliberately left out of `main`:
+## `guardrails-wip` branch — deleted 2026-08-19
 
-- Hyperparameters: `max_depth` 3→4, `eta` 0.01→0.02, `NUM_ROUNDS` 500→800,
-  `EARLY_STOPPING` 20→30
-- A 60/20/20 calibration split and a calibrator output-range warning — both
-  superseded by the k-fold expanding-window `IsotonicEnsemble` and
-  `_log_calibration_diagnostics` now on `main`
-
-Only the hyperparameters are still live, and evaluating them requires a
-retrain against the current calibration code. Either run that experiment and
-land the result, or delete the branch. It is unpushed, so it is not backed up.
+The calibration changes were already superseded on `main`, and the remaining
+hyperparameter experiment (`max_depth` 3→4, `eta` 0.01→0.02) is moot: the
+game-level model loses to the close regardless of tuning (Phase 1), so the
+retrain it required isn't worth the compute. The commit was `1bacf2b` if it
+ever needs archaeology.

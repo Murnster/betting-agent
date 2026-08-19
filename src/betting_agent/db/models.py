@@ -42,8 +42,10 @@ class Game(Base):
     away_ppo = Column(Integer, nullable=True)
     home_pim = Column(Integer, nullable=True)
     away_pim = Column(Integer, nullable=True)
-    home_hits = Column(Integer, nullable=True)
-    away_hits = Column(Integer, nullable=True)
+    # Body checks. "home_hits" belongs to MLB batting below — the two sports
+    # once declared the same attribute name and MLB's silently won.
+    home_nhl_hits = Column(Integer, nullable=True)
+    away_nhl_hits = Column(Integer, nullable=True)
     home_blocks = Column(Integer, nullable=True)
     away_blocks = Column(Integer, nullable=True)
     home_faceoff_pct = Column(Float, nullable=True)

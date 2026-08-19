@@ -1,5 +1,7 @@
 """Unit tests for sport registry."""
 
+from datetime import date
+
 import pytest
 
 from betting_agent.sports.registry import available_sports, get_sport_config
@@ -45,3 +47,31 @@ class TestAvailableSports:
     def test_sorted(self):
         sports = available_sports()
         assert sports == sorted(sports)
+
+    def test_frozen_sports_hidden_by_default(self):
+        sports = available_sports()
+        assert "NHL" not in sports
+        assert "MLB" not in sports
+
+    def test_frozen_sports_still_reachable(self):
+        assert "NHL" in available_sports(include_frozen=True)
+        assert "MLB" in available_sports(include_frozen=True)
+        assert get_sport_config("NHL").sport_key == "icehockey_nhl"
+
+
+class TestSeasonForDate:
+    def test_nfl_january_belongs_to_previous_season(self):
+        config = get_sport_config("NFL")
+        assert config.season_for_date(date(2027, 1, 10)) == 2026
+        assert config.season_for_date(date(2026, 9, 10)) == 2026
+        assert config.season_for_date(date(2026, 8, 1)) == 2026
+
+    def test_nba_spring_belongs_to_previous_season(self):
+        config = get_sport_config("NBA")
+        assert config.season_for_date(date(2027, 4, 15)) == 2026
+        assert config.season_for_date(date(2026, 10, 25)) == 2026
+
+    def test_mlb_uses_calendar_year(self):
+        config = get_sport_config("MLB")
+        assert config.season_for_date(date(2026, 4, 1)) == 2026
+        assert config.season_for_date(date(2026, 9, 30)) == 2026

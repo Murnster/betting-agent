@@ -51,8 +51,11 @@ def get_summary(
     wins = sum(1 for p in picks if p.result == "win")
     losses = sum(1 for p in picks if p.result == "loss")
     pushes = sum(1 for p in picks if p.result == "push")
+    voids = sum(1 for p in picks if p.result == "void")
     total_pnl = sum(p.pnl or 0.0 for p in picks)
-    total_wagered = sum(p.stake for p in picks)
+    # A voided bet never happened (DNP — stake returned), so it doesn't
+    # count as money wagered.
+    total_wagered = sum(p.stake for p in picks if p.result != "void")
     avg_edge = sum(p.edge for p in picks) / total
     clv_picks = [p for p in picks if p.clv is not None]
     avg_clv = sum(p.clv for p in clv_picks) / len(clv_picks) if clv_picks else None
@@ -63,6 +66,7 @@ def get_summary(
         "wins": wins,
         "losses": losses,
         "pushes": pushes,
+        "voids": voids,
         "win_rate_pct": _pct(wins, wins + losses),
         "total_pnl": round(total_pnl, 2),
         "total_wagered": round(total_wagered, 2),
@@ -144,7 +148,8 @@ def format_roi_report(
         f"  ROI REPORT — Sport: {sport or 'ALL'} | Season: {season or 'ALL'}",
         "=" * 60,
         f"  Total bets:   {summary['total_bets']}",
-        f"  Record:       {summary['wins']}-{summary['losses']}-{summary['pushes']}",
+        f"  Record:       {summary['wins']}-{summary['losses']}-{summary['pushes']}"
+        + (f" ({summary['voids']} void)" if summary.get("voids") else ""),
         f"  Win rate:     {summary['win_rate_pct']:.1f}%",
         f"  Total wagered: ${summary['total_wagered']:,.2f}",
         f"  Total P&L:    ${summary['total_pnl']:+,.2f}",

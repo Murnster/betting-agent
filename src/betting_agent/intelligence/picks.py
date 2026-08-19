@@ -159,11 +159,16 @@ def generate_picks(
         pred_margin = float(pred_row["pred_margin"])
         pred_total = float(pred_row["pred_total"])
 
-        # Sentiment adjustment helper
+        # Sentiment adjustment helper. The adjustment is applied to the model
+        # probability itself (not bolted onto the edge) so the edge that
+        # selects the bet and the probability Kelly sizes it with agree.
         def _sent_adj(team: str) -> float:
             if sentiment_scores is None:
                 return 0.0
             return sentiment_scores.get(team, 0.0) * settings.sentiment_weight
+
+        def _with_sentiment(prob: float, adj: float) -> float:
+            return min(max(prob + adj, 0.01), 0.99)
 
         # ---- Moneyline ----
         # Each side is priced at its best book and de-vigged against that same
@@ -175,42 +180,42 @@ def generate_picks(
         ml_away_pair = best_odds.get("away_pair_home_price")
 
         if ml_home:
+            home_prob = _with_sentiment(win_prob, _sent_adj(home))
             if ml_home_pair:
-                edge = calculate_edge_fair(win_prob, ml_home, ml_home_pair, pick_home=True)
+                edge = calculate_edge_fair(home_prob, ml_home, ml_home_pair, pick_home=True)
             else:
-                edge = calculate_edge(win_prob, ml_home)
-            edge += _sent_adj(home)
+                edge = calculate_edge(home_prob, ml_home)
             implied = american_to_implied_prob(ml_home)
             min_edge = _ml_min_edge(implied)
-            if edge >= min_edge and _passes_guardrails(edge, ml_home, win_prob, "moneyline"):
-                kf, bet = recommended_bet(win_prob, ml_home, edge, bankroll)
+            if edge >= min_edge and _passes_guardrails(edge, ml_home, home_prob, "moneyline"):
+                kf, bet = recommended_bet(home_prob, ml_home, edge, bankroll)
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
                     scheduled_game_date=scheduled_game_date,
                     bet_type="moneyline", pick_side=home_odds_name,
-                    model_prob=win_prob, implied_prob=implied, edge=edge,
+                    model_prob=home_prob, implied_prob=implied, edge=edge,
                     odds=ml_home, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,
                 ))
 
         away_win_prob = 1.0 - win_prob
         if ml_away:
+            away_prob = _with_sentiment(away_win_prob, _sent_adj(away))
             if ml_away_pair:
-                edge = calculate_edge_fair(away_win_prob, ml_away_pair, ml_away, pick_home=False)
+                edge = calculate_edge_fair(away_prob, ml_away_pair, ml_away, pick_home=False)
             else:
-                edge = calculate_edge(away_win_prob, ml_away)
-            edge += _sent_adj(away)
+                edge = calculate_edge(away_prob, ml_away)
             implied = american_to_implied_prob(ml_away)
             min_edge = _ml_min_edge(implied)
-            if edge >= min_edge and _passes_guardrails(edge, ml_away, away_win_prob, "moneyline"):
-                kf, bet = recommended_bet(away_win_prob, ml_away, edge, bankroll)
+            if edge >= min_edge and _passes_guardrails(edge, ml_away, away_prob, "moneyline"):
+                kf, bet = recommended_bet(away_prob, ml_away, edge, bankroll)
                 candidates.append(BetCandidate(
                     game_id=game_id, home_team=home, away_team=away,
                     game_date=pick_date, sport=sport,
                     scheduled_game_date=scheduled_game_date,
                     bet_type="moneyline", pick_side=away_odds_name,
-                    model_prob=away_win_prob, implied_prob=implied, edge=edge,
+                    model_prob=away_prob, implied_prob=implied, edge=edge,
                     odds=ml_away, kelly_fraction=kf, recommended_bet=bet,
                     bankroll_at_pick=bankroll, external_id=external_id,
                 ))
@@ -225,7 +230,9 @@ def generate_picks(
                 pred_margin, -spread_line, spread_home_price,
                 away_odds=spread_away_price, sigma=margin_sigma,
             )
-            s_edge += _sent_adj(home)
+            adj_prob = _with_sentiment(cover_prob, _sent_adj(home))
+            s_edge += adj_prob - cover_prob
+            cover_prob = adj_prob
             if s_edge >= settings.min_edge_pct and _passes_guardrails(s_edge, spread_home_price, cover_prob, "spread"):
                 implied = american_to_implied_prob(spread_home_price)
                 kf, bet = recommended_bet(cover_prob, spread_home_price, s_edge, bankroll)
@@ -252,7 +259,9 @@ def generate_picks(
 
         if total_line and over_price:
             over_prob, o_edge = calculate_total_edge(pred_total, total_line, over_price, "over", other_odds=over_pair_under, sigma=total_sigma)
-            o_edge += (_sent_adj(home) + _sent_adj(away)) / 2
+            adj_prob = _with_sentiment(over_prob, (_sent_adj(home) + _sent_adj(away)) / 2)
+            o_edge += adj_prob - over_prob
+            over_prob = adj_prob
             if o_edge >= settings.min_edge_pct and _passes_guardrails(o_edge, over_price, over_prob, "total"):
                 implied = american_to_implied_prob(over_price)
                 kf, bet = recommended_bet(over_prob, over_price, o_edge, bankroll)
@@ -269,7 +278,9 @@ def generate_picks(
 
         if under_line and under_price:
             under_prob, u_edge = calculate_total_edge(pred_total, under_line, under_price, "under", other_odds=under_pair_over, sigma=total_sigma)
-            u_edge += (_sent_adj(home) + _sent_adj(away)) / 2
+            adj_prob = _with_sentiment(under_prob, (_sent_adj(home) + _sent_adj(away)) / 2)
+            u_edge += adj_prob - under_prob
+            under_prob = adj_prob
             if u_edge >= settings.min_edge_pct and _passes_guardrails(u_edge, under_price, under_prob, "total"):
                 implied = american_to_implied_prob(under_price)
                 kf, bet = recommended_bet(under_prob, under_price, u_edge, bankroll)

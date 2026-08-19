@@ -116,10 +116,13 @@ def main() -> None:
     # Warm Elo and rolling averages over the same span the model was trained
     # on, plus the current season. A shorter warm-up leaves teams closer to
     # the base rating than anything the model saw in training.
-    current_year = date.today().year
+    # Season is sport-aware: an NFL/NBA game in January belongs to the
+    # previous year's season, and mistagging it would trigger Elo's
+    # per-season mean reversion mid-season.
+    current_season = config.season_for_date(date.today())
     trained_seasons = engine.training_seasons
     if trained_seasons:
-        history_seasons = sorted({*trained_seasons, current_year - 1, current_year})
+        history_seasons = sorted({*trained_seasons, current_season - 1, current_season})
         warmup_cap = None
     else:
         logger.warning(
@@ -128,7 +131,7 @@ def main() -> None:
             "Retrain to record it.",
             save_dir,
         )
-        history_seasons = [current_year - 1, current_year]
+        history_seasons = [current_season - 1, current_season]
         warmup_cap = 20
 
     try:
@@ -180,7 +183,7 @@ def main() -> None:
         upcoming_rows.append({
             "game_id": g.get("id", ""),
             "game_date": str(gd) if gd else str(date.today()),
-            "season": current_year,
+            "season": current_season,
             "week": None,
             "home_team": home,
             "away_team": away,
@@ -291,8 +294,8 @@ def main() -> None:
                     if not home_t or not away_t or home_t in sentiment_scores:
                         continue
 
-                    home_ctx = fetch_team_context(home_t, current_year, depth=depth, sport=sport)
-                    away_ctx = fetch_team_context(away_t, current_year, depth=depth, sport=sport)
+                    home_ctx = fetch_team_context(home_t, current_season, depth=depth, sport=sport)
+                    away_ctx = fetch_team_context(away_t, current_season, depth=depth, sport=sport)
                     result = analyze_game(home_t, away_t, home_ctx, away_ctx, sport=sport)
 
                     sentiment_scores[home_t] = result["home_score"]

@@ -5,8 +5,9 @@ Markets modeled (Phase 3 MVP): receptions and receiving yards.
 
 Receptions are counts with variance above the mean, so they get a negative
 binomial whose dispersion is fit per position from history. Receiving yards
-are non-negative and right-skewed, so they get a gamma whose coefficient of
-variation is fit per position. Both center on an exponentially-weighted
+are non-negative and heavy-tailed, so they get a shifted lognormal whose
+residual location/scale vary with projection size (low-volume players carry
+fatter zero-side tails). Both center on an exponentially-weighted
 average of the player's recent games, shrunk toward the position mean
 (few games = mostly prior), scaled by how the opponent's defense treats
 that position relative to league average.
@@ -38,6 +39,11 @@ MARKET_STAT_COLUMNS: dict[str, str] = {
 }
 
 MODELED_MARKETS = ("player_receptions", "player_reception_yds")
+
+# Sentinel returned by stat lookups when the week's stats ARE published but
+# the player has no row — a DNP. Distinct from None (stats not yet available),
+# so the grader can void the pick instead of leaving it pending forever.
+DNP = "DNP"
 
 # Pseudo-line offsets around a projected mean — the neighbourhood real books
 # quote in. Used to tune and to validate probability calibration.
@@ -384,10 +390,15 @@ def make_stat_lookup(seasons: list[int]):
     Build a stat_lookup(player, market, game) callable for
     grade_prop_picks(). Resolves the game's NFL week from the schedule by
     (home, away, nearest date), then finds the player's row for that week.
-    Returns None (leave ungraded) when the player has no row — DNP or stats
-    not yet published.
+
+    Returns the stat as float; None when the week's stats aren't published
+    yet (leave ungraded); or the DNP sentinel when stats for the game's
+    teams ARE published but the player has no row — the pick voids, matching
+    how books settle a prop on a player who didn't play. A name that never
+    matches nflreadpy's spelling voids the same way, so check the void log
+    line if a star player's pick voids unexpectedly.
     """
-    from betting_agent.sports.nfl.loader import NFLDataLoader
+    from betting_agent.sports.nfl.loader import NFLLoader
 
     stats = load_player_stats(seasons)
     if stats.empty:
@@ -395,7 +406,7 @@ def make_stat_lookup(seasons: list[int]):
     stats = stats.copy()
     stats["player_key"] = stats["player_display_name"].map(normalize_player)
 
-    schedules = NFLDataLoader().load_schedules(seasons).to_pandas()
+    schedules = NFLLoader().load_schedules(seasons).to_pandas()
     from betting_agent.sports.nfl.features import normalise_raw_schedules
     schedules = normalise_raw_schedules(schedules)
 
@@ -417,14 +428,16 @@ def make_stat_lookup(seasons: list[int]):
         season, week = int(row["season"]), int(row["week"])
 
         key = normalize_player(player)
-        hits = stats[
-            (stats["player_key"] == key)
-            & (stats["season"] == season)
+        week_stats = stats[
+            (stats["season"] == season)
             & (stats["week"] == week)
             & (stats["team"].isin([game.home_team, game.away_team]))
         ]
-        if hits.empty or col not in hits.columns:
-            return None
+        if week_stats.empty or col not in stats.columns:
+            return None  # stats for this game not published yet
+        hits = week_stats[week_stats["player_key"] == key]
+        if hits.empty:
+            return DNP  # week is published, player absent — void
         return float(hits.iloc[0][col])
 
     return lookup

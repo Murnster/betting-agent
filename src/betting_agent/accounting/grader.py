@@ -102,14 +102,24 @@ def _grade_total(pick: Pick, game: Game) -> str | None:
     return "win" if total < line else "loss"
 
 
-def _grade_prop(pick: Pick, actual: float | None) -> str | None:
+def _grade_prop(pick: Pick, actual: float | str | None) -> str | None:
     """
     Grade an over/under prop against the player's actual stat.
     Props store the side in pick_side ("over"/"under"), the number in
     pick.line, and the player/market in their own columns.
+
+    actual is the stat as a float; None when unknown (leave ungraded); or
+    the "DNP" sentinel when the week's stats are published without the
+    player — the pick voids (stake returned), matching book settlement.
     """
     if actual is None:
         return None
+    if isinstance(actual, str):
+        logger.info(
+            "Prop pick %s voided — %s has no stat row for a published week",
+            pick.id, pick.player,
+        )
+        return "void"
     if pick.line is None:
         logger.warning("Prop pick %s has no line — cannot grade", pick.id)
         return None
@@ -128,11 +138,11 @@ def grade_prop_picks(stat_lookup, sport: str = "NFL", target_date: date | None =
     """
     Grade ungraded prop picks using a stat lookup.
 
-    stat_lookup(player: str, market: str, game: Game) -> float | None returns
-    the player's actual stat for that game, or None when unknown (player did
-    not play, stats not yet published, unrecognised market). Unknown leaves
-    the pick ungraded — a DNP should be voided by the caller's own policy,
-    not silently booked.
+    stat_lookup(player: str, market: str, game: Game) returns the player's
+    actual stat as a float; None when unknown (stats not yet published,
+    unrecognised market), which leaves the pick ungraded; or the "DNP"
+    sentinel string when the week's stats are published without the player,
+    which voids the pick (result="void", pnl=0 — stake returned).
     """
     graded = 0
     with get_session() as session:
@@ -158,7 +168,7 @@ def grade_prop_picks(stat_lookup, sport: str = "NFL", target_date: date | None =
 
 def _calculate_pnl(pick: Pick, result: str) -> float:
     """Calculate P&L for a graded pick, using the bet actually placed when recorded."""
-    if result == "push":
+    if result in ("push", "void"):
         return 0.0
     bet = pick.stake
     if result == "win":

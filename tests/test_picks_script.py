@@ -55,6 +55,11 @@ def test_main_saves_picks_before_agent_validations(monkeypatch, capsys):
 
     class _Config:
         sport_key = "americanfootball_nfl"
+        season_start_month = 8
+
+        @staticmethod
+        def season_for_date(d):
+            return d.year if d.month >= 8 else d.year - 1
 
         @staticmethod
         def build_features(df: pd.DataFrame) -> pd.DataFrame:
