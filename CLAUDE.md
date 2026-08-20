@@ -33,6 +33,8 @@ uv run python scripts/props.py --pick-games          # choose games interactivel
 uv run python scripts/props.py --suggest 3           # free pre-screen, auto-picks 3 hottest games
 uv run python scripts/props.py --today --save        # cron mode: today's slate only, off-days exit free
 uv run python scripts/replay.py --random             # dress-rehearse a past week (synthetic lines)
+uv run python scripts/replay.py --random-sunday --suggest 4   # weekend rehearsal: heat board + top-4 games
+uv run python scripts/replay.py --date 2025-12-28 --suggest 4 # same, for a specific calendar day
 uv run python scripts/props_diagnostic.py            # walk-forward pick-level backtest (sets the floors)
 uv run python scripts/props_calibration.py --train-seasons 2020 2021 2022 2023 --eval-seasons 2024 2025
 

@@ -325,6 +325,56 @@ class TestPropPickLabels:
         assert "Travis Kelce receptions under 4.5" in embed["description"]
 
 
+class TestReplayWeekendHelpers:
+    """day_slate / heat_board — the replicable weekend-replay pattern."""
+
+    def test_day_slate_filters_to_the_calendar_day(self, monkeypatch):
+        import scripts.replay as replay_mod
+
+        sched = pd.DataFrame({
+            "home_team": ["KC", "BUF", "DAL"],
+            "away_team": ["LV", "MIA", "PHI"],
+            "game_date": [pd.Timestamp("2025-12-28"), pd.Timestamp("2025-12-28"),
+                          pd.Timestamp("2025-12-25")],
+            "week": [17, 17, 17],
+            "home_score": [20.0, 24.0, 30.0],
+            "away_score": [10.0, 21.0, 27.0],
+        })
+
+        class _FakePolars:
+            def to_pandas(self):
+                return sched
+
+        class _FakeLoader:
+            def load_schedules(self, seasons):
+                return _FakePolars()
+
+        import betting_agent.sports.nfl.features as feat_mod
+        import betting_agent.sports.nfl.loader as loader_mod
+        monkeypatch.setattr(loader_mod, "NFLLoader", _FakeLoader)
+        monkeypatch.setattr(feat_mod, "normalise_raw_schedules", lambda df: df)
+
+        day, week, matchups = replay_mod.day_slate(2025, date(2025, 12, 28), False)
+        assert day == date(2025, 12, 28)
+        assert week == 17
+        assert matchups == [("BUF", "MIA"), ("KC", "LV")]
+
+    def test_heat_board_ranks_by_summed_edges(self):
+        import scripts.replay as replay_mod
+
+        hot = ("KC", "LV")
+        cold = ("BUF", "MIA")
+        def edge(e):
+            return (e, "someone", "player_receptions", "under", 4.5, 0.5 + e, 5.0)
+        board = replay_mod.heat_board(
+            [cold, hot],
+            {hot: [edge(0.20), edge(0.15)], cold: [edge(0.11)]},
+        )
+        assert [g for _, _, g in board] == [hot, cold]
+        assert board[0][0] == pytest.approx(0.35)
+        assert board[0][1] == 2
+
+
 class TestFinalizeNflGames:
     """props.py writes games as 'scheduled'; grading needs them 'final'."""
 
