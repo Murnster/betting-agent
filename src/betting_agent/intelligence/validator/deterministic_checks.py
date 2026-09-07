@@ -11,7 +11,14 @@ def build_deterministic_flags(
     sport: str,
     history_df: pd.DataFrame | None = None,
     metadata_map: dict[str, dict] | None = None,
+    injuries: pd.DataFrame | None = None,
+    qb1: dict | None = None,
+    player_teams: dict[str, str] | None = None,
 ) -> list[DeterministicFlag]:
+    """
+    Pure: everything it flags comes from the arguments. `injuries`, `qb1`
+    and `player_teams` are the NFL prop inputs (see sports/nfl/injuries.py).
+    """
     flags: list[DeterministicFlag] = []
     if not candidates:
         return flags
@@ -22,6 +29,11 @@ def build_deterministic_flags(
 
     if sport == "NFL":
         flags.extend(_weather_flags(first, metadata_map or {}))
+        props = [c for c in candidates if c.bet_type == "prop"]
+        if props and (injuries is not None or qb1):
+            from betting_agent.sports.nfl.injuries import prop_injury_flags
+
+            flags.extend(prop_injury_flags(props, injuries, qb1, player_teams))
 
     return flags
 

@@ -157,6 +157,7 @@ class Pick(Base):
     bankroll_at_pick = Column(Float, nullable=True)
     result = Column(String(10), nullable=True)          # 'win'|'loss'|'push'|NULL
     closing_odds = Column(Integer, nullable=True)       # for CLV calculation
+    closing_line = Column(Float, nullable=True)         # props: line at close (may differ)
     clv = Column(Float, nullable=True)                  # closing line value
     pnl = Column(Float, nullable=True)                  # profit/loss in dollars
     graded_at = Column(TIMESTAMPTZ, nullable=True)

@@ -162,22 +162,10 @@ class GeminiValidator:
 
 
 def _build_prompt(payload: ValidatorInput) -> str:
-    return (
-        "You are validating sports bets after a quantitative model has already generated them.\n"
-        "Return strict JSON with this shape:\n"
-        '{"game_id":"string","results":[{"bet_type":"moneyline|spread|total","pick_side":"string",'
-        '"verdict":"UNCHANGED|REDUCED|NO_BET|SKIPPED","edge_adjustment":0.0,'
-        '"adjusted_edge":0.0,"kelly_multiplier":1.0,"reasons":["short reason"]}],'
-        '"tokens_used":{"input":0,"output":0},"estimated_cost_usd":0.0}\n'
-        "Rules:\n"
-        "- Only use verdicts UNCHANGED, REDUCED, NO_BET, or SKIPPED.\n"
-        "- Keep reasons short and factual.\n"
-        f"- Never adjust edge by more than {settings.agent_max_edge_adjustment:.2f} in absolute value.\n"
-        "- Use REDUCED when information adds risk but does not fully kill the pick.\n"
-        "- Use NO_BET only when the available findings materially undermine the pick.\n"
-        "Payload:\n"
-        f"{payload.model_dump_json(indent=2, exclude_none=True)}"
-    )
+    # Shared with the claude CLI provider; kept under the old name for callers.
+    from betting_agent.intelligence.validator.prompt import build_prompt
+
+    return build_prompt(payload)
 
 
 def _extract_json_text(raw: str) -> str:

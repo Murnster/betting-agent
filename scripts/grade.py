@@ -45,9 +45,9 @@ def _grade_nfl_props(target_date: date | None) -> int:
 
     from betting_agent.accounting.grader import grade_prop_picks
     from betting_agent.sports.nfl.props import make_stat_lookup
+    from betting_agent.sports.registry import get_sport_config
 
-    year = date.today().year
-    season = year if date.today().month >= 8 else year - 1
+    season = get_sport_config("NFL").season_for_date(date.today())
     lookup = make_stat_lookup([season])
     return grade_prop_picks(lookup, sport="NFL", target_date=target_date)
 

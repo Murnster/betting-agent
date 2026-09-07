@@ -10,6 +10,8 @@ class DeterministicFlag(BaseModel):
     team: str | None = None
     severity: str = "low"
     detail: str
+    player: str | None = None   # props: the player the flag is about
+    drop: bool = False          # policy says the pick should not be made
 
 
 class SearchFinding(BaseModel):
@@ -32,6 +34,13 @@ class CandidateValidationInput(BaseModel):
     odds: int
     kelly_fraction: float
     recommended_bet: float
+    # Props only
+    player: str | None = None
+    market: str | None = None
+    line: float | None = None
+    projection_mean: float | None = None
+    projection_games: int | None = None
+    recent_values: list[float] | None = None   # last 8 games of the modeled stat
 
 
 class ValidatorInput(BaseModel):
@@ -44,11 +53,15 @@ class ValidatorInput(BaseModel):
     picks: list[CandidateValidationInput]
     deterministic_flags: list[DeterministicFlag] = Field(default_factory=list)
     search_findings: list[SearchFinding] = Field(default_factory=list)
+    spread_line: float | None = None   # home-team spread from the published schedule
+    total_line: float | None = None
 
 
 class ValidationPickResult(BaseModel):
     bet_type: str
     pick_side: str
+    player: str | None = None
+    market: str | None = None
     verdict: str
     edge_adjustment: float = 0.0
     adjusted_edge: float

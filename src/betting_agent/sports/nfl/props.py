@@ -157,6 +157,150 @@ def build_receiving_history(stats: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+#: How many distinct slates back a player must have appeared to count as
+#: someone a book would hang a line on.
+ACTIVE_WINDOW_SLATES = 3
+
+
+def active_player_keys(history: pd.DataFrame, asof_t: int,
+                       window: int = ACTIVE_WINDOW_SLATES) -> set[str]:
+    """
+    Players seen in the last `window` distinct slates strictly before `asof_t`.
+
+    `t = season*100 + week` is not contiguous across seasons, so the window
+    is taken by RANK of the distinct `t` values in history, never by
+    subtraction: `asof_t - 3` in week 1 of a new season names a `t` no game
+    has and silently excludes every player.
+
+    Postseason slates carry only the surviving teams, so when the history
+    tags `season_type` the window counts regular-season slates only —
+    otherwise week 1 would look back at the divisional round through the
+    Super Bowl and find two teams' worth of players.
+    """
+    if history is None or history.empty or "t" not in history.columns:
+        return set()
+    if "season_type" in history.columns:
+        regular = history[history["season_type"] == "REG"]
+        if not regular.empty:
+            history = regular
+    past_ts = sorted(t for t in history["t"].unique() if t < asof_t)
+    if not past_ts:
+        return set()
+    recent = set(past_ts[-window:])
+    rows = history[history["t"].isin(recent)]
+    return set(rows["player_key"].unique())
+
+
+def current_teams(season: int) -> dict[str, str]:
+    """
+    Player key → current team from the published roster, for pass-catchers
+    on active status. Stats rows only know the team a player LAST PLAYED for,
+    so offseason movers would otherwise be attributed to the wrong side.
+    Returns {} on any failure — callers fall back to the stats-derived team.
+    """
+    try:
+        roster = nfl.load_rosters([season]).to_pandas()
+    except Exception as exc:
+        logger.warning("No roster for %s (using last-played teams): %s", season, exc)
+        return {}
+    if roster.empty or not {"status", "position", "full_name", "team"} <= set(roster.columns):
+        return {}
+    active = roster[
+        (roster["status"] == "ACT") & (roster["position"].isin(RECEIVING_POSITIONS))
+    ]
+    return {
+        normalize_player(name): str(team)
+        for name, team in active[["full_name", "team"]].itertuples(index=False)
+        if name and pd.notna(team)
+    }
+
+
+def load_season_schedule(season: int) -> pd.DataFrame:
+    """Normalised nflreadpy schedule for one season; empty frame on failure."""
+    from betting_agent.sports.nfl.features import normalise_raw_schedules
+    from betting_agent.sports.nfl.loader import NFLLoader
+
+    try:
+        sched = normalise_raw_schedules(NFLLoader().load_schedules([season]).to_pandas())
+    except Exception as exc:
+        logger.warning("Could not load %s schedule: %s", season, exc)
+        return pd.DataFrame()
+    if not sched.empty and "game_date" in sched.columns:
+        sched = sched.assign(game_date=pd.to_datetime(sched["game_date"]))
+    return sched
+
+
+#: A schedule row must land this close to the requested date to match.
+SCHEDULE_DATE_TOLERANCE = pd.Timedelta(days=2)
+
+
+def schedule_row_for(
+    schedule: pd.DataFrame,
+    game_date,
+    home: str | None = None,
+    away: str | None = None,
+) -> pd.Series | None:
+    """
+    Nearest schedule row to `game_date` (within two days), optionally
+    restricted to a matchup given as nflreadpy abbreviations.
+    """
+    if schedule is None or schedule.empty or "game_date" not in schedule.columns:
+        return None
+    rows = schedule
+    if home is not None and away is not None:
+        rows = rows[(rows["home_team"] == home) & (rows["away_team"] == away)]
+    if rows.empty:
+        return None
+    stamp = pd.Timestamp(game_date)
+    gaps = (pd.to_datetime(rows["game_date"]) - stamp).abs()
+    idx = gaps.idxmin()
+    if gaps.loc[idx] > SCHEDULE_DATE_TOLERANCE:
+        return None
+    return rows.loc[idx]
+
+
+def approximate_nfl_week(event_date, season: int) -> int:
+    """Date-only fallback for the NFL week, used when no schedule is available."""
+    from datetime import date as _date
+
+    season_start = _date(season, 9, 1)
+    days = (pd.Timestamp(event_date).date() - season_start).days
+    return max(1, min(22, days // 7 + 1))
+
+
+def nfl_week_for(
+    event_date,
+    season: int,
+    schedule: pd.DataFrame | None,
+    home: str | None = None,
+    away: str | None = None,
+) -> int:
+    """
+    NFL week for a game, from the published schedule when possible (exact
+    matchup first, then any game within two days), else the date heuristic.
+    """
+    if schedule is not None and not schedule.empty and "week" in schedule.columns:
+        row = schedule_row_for(schedule, event_date, home, away)
+        if row is None and home is not None:
+            row = schedule_row_for(schedule, event_date)
+        if row is not None and pd.notna(row["week"]):
+            return int(row["week"])
+    return approximate_nfl_week(event_date, season)
+
+
+def pair_outcomes(market: dict) -> dict[tuple[str, float], dict[str, dict]]:
+    """Group a market's outcomes into {(player, line): {"Over": o, "Under": o}}."""
+    pairs: dict[tuple[str, float], dict[str, dict]] = {}
+    for outcome in market.get("outcomes", []):
+        player = outcome.get("description")
+        point = outcome.get("point")
+        name = outcome.get("name")
+        if player is None or point is None or name not in ("Over", "Under"):
+            continue
+        pairs.setdefault((player, float(point)), {})[name] = outcome
+    return pairs
+
+
 YARDS_SHIFT = 5.0   # lognormal shift so zero-yard games stay in support
 
 
@@ -466,32 +610,22 @@ def make_stat_lookup(seasons: list[int]):
     matches nflreadpy's spelling voids the same way, so check the void log
     line if a star player's pick voids unexpectedly.
     """
-    from betting_agent.sports.nfl.loader import NFLLoader
-
     stats = load_player_stats(seasons)
     if stats.empty:
         return lambda player, market, game: None
     stats = stats.copy()
     stats["player_key"] = stats["player_display_name"].map(normalize_player)
 
-    schedules = NFLLoader().load_schedules(seasons).to_pandas()
-    from betting_agent.sports.nfl.features import normalise_raw_schedules
-    schedules = normalise_raw_schedules(schedules)
+    schedules = pd.concat(
+        [load_season_schedule(s) for s in seasons], ignore_index=True
+    ) if seasons else pd.DataFrame()
 
     def lookup(player: str | None, market: str | None, game) -> float | None:
         col = MARKET_STAT_COLUMNS.get(market or "")
         if col is None or not player:
             return None
-        sched = schedules[
-            (schedules["home_team"] == game.home_team)
-            & (schedules["away_team"] == game.away_team)
-        ]
-        if sched.empty or "week" not in sched.columns:
-            return None
-        game_date = pd.Timestamp(game.game_date)
-        sched = sched.assign(_gap=(sched["game_date"] - game_date).abs())
-        row = sched.sort_values("_gap").iloc[0]
-        if row["_gap"] > pd.Timedelta(days=2):
+        row = schedule_row_for(schedules, game.game_date, game.home_team, game.away_team)
+        if row is None or "week" not in row.index:
             return None
         season, week = int(row["season"]), int(row["week"])
 

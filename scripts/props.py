@@ -17,6 +17,8 @@ Usage:
     uv run python scripts/props.py --today --save      # daily cron: today's slate only,
                                                        # off-days exit free. Combine with
                                                        # --suggest N to cap credits.
+    uv run python scripts/props.py --closing           # pre-kickoff: snapshot closing
+                                                       # price/line on held picks (CLV)
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ import logging
 import sys
 from datetime import date, datetime
 
+import pandas as pd
+
 from betting_agent.config import settings
 from betting_agent.intelligence.ev import american_to_implied_prob, remove_vig
 from betting_agent.intelligence.kelly import recommended_bet
@@ -33,36 +37,68 @@ from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
 from betting_agent.sports.nfl.props import (
     MODELED_MARKETS,
     PROP_EDGE_FLOORS,
-    edge_floor,
     ReceivingPropsModel,
+    active_player_keys,
+    approximate_nfl_week,
     book_proxy_line,
     build_receiving_history,
+    edge_floor,
     fetch_prop_odds,
     load_player_stats,
+    nfl_week_for,
     normalize_player,
+    pair_outcomes,
+    schedule_row_for,
 )
+from betting_agent.sports.registry import get_sport_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+RECENT_GAMES_FOR_PAYLOAD = 8
 
 
 def _current_nfl_season(today: date) -> int:
-    # NFL seasons run Sep–Feb; Jan/Feb games belong to the previous year's season.
-    return today.year if today.month >= 8 else today.year - 1
+    return get_sport_config("NFL").season_for_date(today)
 
 
-def _pair_outcomes(market: dict) -> dict[tuple[str, float], dict[str, dict]]:
-    """Group a market's outcomes into {(player, line): {"Over": o, "Under": o}}."""
-    pairs: dict[tuple[str, float], dict[str, dict]] = {}
-    for outcome in market.get("outcomes", []):
-        player = outcome.get("description")
-        point = outcome.get("point")
-        name = outcome.get("name")
-        if player is None or point is None or name not in ("Over", "Under"):
-            continue
-        pairs.setdefault((player, float(point)), {})[name] = outcome
-    return pairs
+# Kept under the old private name for callers; the implementation is shared
+# with the closing-line capture in accounting/prop_clv.py.
+_pair_outcomes = pair_outcomes
+_nfl_week = approximate_nfl_week
+
+
+def _event_date(event: dict) -> date:
+    try:
+        return datetime.fromisoformat(
+            event.get("commence_time", "").replace("Z", "+00:00")
+        ).date()
+    except ValueError:
+        return date.today()
+
+
+def _active_players(
+    hist: pd.DataFrame,
+    asof_t: int,
+    teams: tuple[str, str],
+    current_teams: dict[str, str] | None,
+    last_team: pd.Series | None = None,
+) -> dict[str, str]:
+    """
+    {player_key: team} for players a book would hang a line on in this
+    game: seen in the last three slates, on one of the two teams. The
+    published roster wins over the last stats row, so offseason movers land
+    on their new side.
+    """
+    if last_team is None:
+        last_team = hist.sort_values("t").groupby("player_key")["team"].last()
+    current_teams = current_teams or {}
+    out: dict[str, str] = {}
+    for pk in active_player_keys(hist, asof_t):
+        team = current_teams.get(pk) or last_team.get(pk)
+        if team in teams:
+            out[pk] = team
+    return out
 
 
 def rank_events_by_model_heat(
@@ -70,6 +106,8 @@ def rank_events_by_model_heat(
     models: dict[str, ReceivingPropsModel],
     history,
     season: int,
+    current_teams: dict[str, str] | None = None,
+    schedule: pd.DataFrame | None = None,
 ) -> list[tuple[dict, int, float]]:
     """
     Free pre-screen: score each upcoming game by the prop edges the models
@@ -83,7 +121,6 @@ def rank_events_by_model_heat(
     from betting_agent.sports.teams import canonical_team
 
     hist = history.sort_values("t")
-    recent_t = hist.groupby("player_key")["t"].max()
     last_team = hist.groupby("player_key")["team"].last()
     tails = {
         model.stat_col: hist.groupby("player_key")[model.stat_col].apply(
@@ -96,22 +133,14 @@ def rank_events_by_model_heat(
     for event in events:
         home_ab = canonical_team("NFL", event.get("home_team", ""))
         away_ab = canonical_team("NFL", event.get("away_team", ""))
-        try:
-            event_date = datetime.fromisoformat(
-                event.get("commence_time", "").replace("Z", "+00:00")
-            ).date()
-        except ValueError:
-            event_date = date.today()
-        week = _nfl_week(event_date, season)
+        week = nfl_week_for(_event_date(event), season, schedule, home_ab, away_ab)
         asof_t = season * 100 + week
-        # Only players a book would hang a line on: seen in the last 3 weeks.
-        active = recent_t[recent_t >= asof_t - 3].index
-        players = [pk for pk in active if last_team.get(pk) in (home_ab, away_ab)]
+        players = _active_players(hist, asof_t, (home_ab, away_ab), current_teams, last_team)
 
         best: dict[str, float] = {}
         for market, model in models.items():
-            for pk in players:
-                opponent = away_ab if last_team[pk] == home_ab else home_ab
+            for pk, team in players.items():
+                opponent = away_ab if team == home_ab else home_ab
                 proj = model.project(pk, season, week, opponent=opponent)
                 if proj is None:
                     continue
@@ -153,24 +182,19 @@ def _choose_events(ranked: list[tuple[dict, int, float]]) -> list[dict]:
     return picked or events
 
 
-def _nfl_week(event_date: date, season: int) -> int:
-    """Approximate NFL week from the date — only used to time-split history."""
-    season_start = date(season, 9, 1)
-    days = (event_date - season_start).days
-    return max(1, min(22, days // 7 + 1))
-
-
-def _events_commencing_today(events: list[dict]) -> list[dict]:
+def _events_commencing_today(events: list[dict], now: datetime | None = None) -> list[dict]:
     """
-    Games whose kickoff falls on the LOCAL calendar day.
+    Games whose kickoff falls on the LOCAL calendar day and has not started.
 
     commence_time is UTC, and Sunday Night Football at 8:20pm ET is already
     Monday in UTC — filtering on the raw string would misfile every primetime
     game. This is what makes a dumb daily cron job schedule-aware: Thursday,
     Saturday, Sunday, and Monday slates all match on their own day, and
-    off-days return nothing (no credits spent).
+    off-days return nothing (no credits spent). Games already kicked off are
+    dropped so a second run never refreshes saved picks with in-play prices.
     """
-    today = datetime.now().astimezone().date()
+    now = (now or datetime.now()).astimezone()
+    today = now.date()
     out = []
     for e in events:
         try:
@@ -179,7 +203,7 @@ def _events_commencing_today(events: list[dict]) -> list[dict]:
             )
         except ValueError:
             continue
-        if kickoff.astimezone().date() == today:
+        if kickoff.astimezone().date() == today and kickoff > now:
             out.append(e)
     return out
 
@@ -200,31 +224,53 @@ def _deduplicate_by_player(candidates: list[BetCandidate]) -> list[BetCandidate]
     return list(best.values())
 
 
+def _recent_values(model, player_key: str) -> list[float]:
+    """Last games of the modeled stat for the validator payload ([] if unknown)."""
+    col = getattr(model, "stat_col", None)
+    hist = getattr(model, "history", None)
+    if col is None or hist is None or col not in hist.columns:
+        return []
+    rows = hist[hist["player_key"] == player_key]
+    if "t" in rows.columns:
+        rows = rows.sort_values("t")
+    return [round(max(0.0, float(v)), 1) for v in rows[col].tail(RECENT_GAMES_FOR_PAYLOAD)]
+
+
+def player_teams(candidates: list[BetCandidate]) -> dict[str, str]:
+    """player_key → team abbreviation, from what generate_prop_candidates recorded."""
+    return {
+        normalize_player(c.player): c.extra["team"]
+        for c in candidates
+        if c.player and c.extra.get("team")
+    }
+
+
 def generate_prop_candidates(
     events: list[dict],
     models: dict[str, ReceivingPropsModel],
     bankroll: float,
     min_edge: float | None,
     season: int,
+    current_teams: dict[str, str] | None = None,
+    schedule: pd.DataFrame | None = None,
+    injuries: pd.DataFrame | None = None,
+    qb1: dict | None = None,
 ) -> list[BetCandidate]:
     from betting_agent.intelligence.picks import (
         _apply_same_game_correlation_adjustment,
     )
+    from betting_agent.sports.nfl.injuries import apply_injury_policy, prop_injury_flags
     from betting_agent.sports.teams import canonical_team
 
+    current_teams = current_teams or {}
     candidates: list[BetCandidate] = []
     for event in events:
         home = event.get("home_team", "")
         away = event.get("away_team", "")
         home_abbrev = canonical_team("NFL", home)
         away_abbrev = canonical_team("NFL", away)
-        try:
-            event_date = datetime.fromisoformat(
-                event.get("commence_time", "").replace("Z", "+00:00")
-            ).date()
-        except ValueError:
-            event_date = date.today()
-        week = _nfl_week(event_date, season)
+        event_date = _event_date(event)
+        week = nfl_week_for(event_date, season, schedule, home_abbrev, away_abbrev)
 
         for book in event.get("bookmakers", []):
             for market in book.get("markets", []):
@@ -232,14 +278,16 @@ def generate_prop_candidates(
                 model = models.get(key)
                 if model is None:
                     continue
-                for (player, line), pair in _pair_outcomes(market).items():
+                for (player, line), pair in pair_outcomes(market).items():
                     over = pair.get("Over")
                     under = pair.get("Under")
                     if not over or not under:
                         continue
                     player_key = normalize_player(player)
-                    team_rows = model.history[model.history["player_key"] == player_key]
-                    player_team = team_rows["team"].iloc[-1] if len(team_rows) else None
+                    player_team = current_teams.get(player_key)
+                    if player_team is None:
+                        team_rows = model.history[model.history["player_key"] == player_key]
+                        player_team = team_rows["team"].iloc[-1] if len(team_rows) else None
                     opponent = None
                     if player_team == home_abbrev:
                         opponent = away_abbrev
@@ -286,14 +334,76 @@ def generate_prop_candidates(
                             bankroll_at_pick=bankroll,
                             extra={"projection_mean": round(proj.mean, 2),
                                    "projection_games": proj.games,
-                                   "bookmaker": book.get("key")},
+                                   "bookmaker": book.get("key"),
+                                   "team": player_team if opponent else None,
+                                   "recent_values": _recent_values(model, player_key)},
                         ))
     candidates = _deduplicate_by_player(candidates)
+    # Official injury report: Out/Doubtful players are dropped, Questionable
+    # and a QB1 who is out are attached as flags. No-op when the feeds are
+    # unavailable (pre-season gate, download failure).
+    if injuries is not None or qb1:
+        flags = prop_injury_flags(candidates, injuries, qb1, player_teams(candidates))
+        candidates = apply_injury_policy(candidates, flags)
     # Props in one game share a quarterback and a game script, so their
     # outcomes move together — scale the stakes down accordingly.
     _apply_same_game_correlation_adjustment(candidates)
     candidates.sort(key=lambda c: c.edge, reverse=True)
     return candidates
+
+
+def game_lines_from_schedule(
+    events: list[dict], schedule: pd.DataFrame | None
+) -> dict[str, tuple[float | None, float | None]]:
+    """external_id → (spread_line, total_line) from the published schedule."""
+    from betting_agent.sports.teams import canonical_team
+
+    if schedule is None or schedule.empty:
+        return {}
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for e in events:
+        row = schedule_row_for(
+            schedule, _event_date(e),
+            canonical_team("NFL", e.get("home_team", "")),
+            canonical_team("NFL", e.get("away_team", "")),
+        )
+        if row is None or not e.get("id"):
+            continue
+
+        def _num(v):
+            return None if v is None or pd.isna(v) else float(v)
+
+        out[str(e["id"])] = (_num(row.get("spread_line")), _num(row.get("total_line")))
+    return out
+
+
+def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
+    print(f"\n{'player':<24} {'market':<22} {'side':<6} {'line':>6} {'odds':>6} "
+          f"{'model':>7} {'fair':>7} {'edge':>7} {'paper $':>8}  verdict")
+    for c in candidates:
+        verdict = c.agent_verdict or ""
+        if verdict and verdict != "SKIPPED" and shadow:
+            verdict += " (SHADOW)"
+        print(f"{c.player:<24} {c.market:<22} {c.pick_side:<6} {c.line:>6.1f} "
+              f"{c.odds:>+6} {c.model_prob:>6.1%} {c.implied_prob:>6.1%} "
+              f"{c.edge:>+6.1%} {c.recommended_bet:>8.2f}  {verdict}")
+        for flag in c.extra.get("flags", []):
+            print(f"{'':<24} ! {flag.get('detail', '')}")
+        agent = c.extra.get("agent") or {}
+        for reason in agent.get("reasons", [])[:2]:
+            print(f"{'':<24} > {reason}")
+
+
+def run_closing_capture(window_minutes: int) -> None:
+    from betting_agent.accounting.prop_clv import capture_closing_lines_for_upcoming
+
+    books = settings.preferred_bookmaker_list or ["bet365"]
+    n = capture_closing_lines_for_upcoming(window_minutes=window_minutes, bookmakers=books)
+    if n:
+        print(f"Stored closing lines for {n} prop picks.")
+    else:
+        print(f"No held prop picks kick off in the next {window_minutes} minutes — "
+              "nothing captured, no credits spent.")
 
 
 def main() -> None:
@@ -318,7 +428,22 @@ def main() -> None:
                              "for a daily cron job: off-days exit immediately "
                              "with no credits spent, Saturday slates and "
                              "primetime games are caught on their own day")
+    parser.add_argument("--closing", action="store_true",
+                        help="Capture closing price/line for held prop picks in "
+                             "games kicking off within --window-minutes (2 credits "
+                             "per game we hold picks in; zero when none)")
+    parser.add_argument("--window-minutes", type=int, default=90,
+                        help="Kickoff window for --closing (default 90)")
+    parser.add_argument("--agent-mode", type=str,
+                        choices=["off", "top", "all"],
+                        default=settings.agent_mode if settings.agent_enabled else "off",
+                        help="LLM validator: off, top (hottest games), or all. "
+                             "Runs in shadow mode unless AGENT_SHADOW=false")
     args = parser.parse_args()
+
+    if args.closing:
+        run_closing_capture(args.window_minutes)
+        return
 
     bankroll = args.bankroll or settings.starting_bankroll
     min_edge = args.min_edge
@@ -349,10 +474,30 @@ def main() -> None:
         model.tune_dispersion([season - 1])
         models[m] = model
 
+    # Season context, all free: roster (offseason movers), schedule (exact
+    # week, spread/total), injury report + depth charts (QB1).
+    from betting_agent.sports.nfl.injuries import load_injury_report, qb1_by_team
+    from betting_agent.sports.nfl.props import current_teams, load_season_schedule
+
+    roster = current_teams(season)
+    if roster:
+        last_team = history.sort_values("t").groupby("player_key")["team"].last()
+        moved = sum(1 for pk, t in last_team.items() if roster.get(pk) not in (None, t))
+        logger.info("Roster overlay: %d players, %d re-teamed vs their last stats row",
+                    len(roster), moved)
+    schedule = load_season_schedule(season)
+    first_event = (upcoming or [None])[0]
+    week_hint = nfl_week_for(_event_date(first_event) if first_event else date.today(),
+                             season, schedule)
+    injuries = load_injury_report(season, week_hint)
+    qb1 = qb1_by_team(season)
+    if injuries.empty:
+        logger.info("No injury report for %s week %d — injury checks skipped", season, week_hint)
+
     books = settings.preferred_bookmaker_list or ["bet365"]
     chosen = None
     if upcoming is not None:
-        ranked = rank_events_by_model_heat(upcoming, models, history, season)
+        ranked = rank_events_by_model_heat(upcoming, models, history, season, roster, schedule)
         if args.suggest:
             chosen = [e for e, _, _ in ranked[: args.suggest]]
             print(f"\nSuggested games (top {len(chosen)} by expected prop edges):")
@@ -368,25 +513,54 @@ def main() -> None:
     if not events:
         raise SystemExit("No prop odds returned — check ODDS_API_KEY / season timing.")
 
-    candidates = generate_prop_candidates(events, models, bankroll, min_edge, season)
+    candidates = generate_prop_candidates(
+        events, models, bankroll, min_edge, season,
+        current_teams=roster, schedule=schedule, injuries=injuries, qb1=qb1,
+    )
     candidates = candidates[:args.max_picks]
 
     if not candidates:
         print("\nNo prop edges clear the threshold today.")
         return
 
-    print(f"\n{'player':<24} {'market':<22} {'side':<6} {'line':>6} {'odds':>6} "
-          f"{'model':>7} {'fair':>7} {'edge':>7} {'paper $':>8}")
-    for c in candidates:
-        print(f"{c.player:<24} {c.market:<22} {c.pick_side:<6} {c.line:>6.1f} "
-              f"{c.odds:>+6} {c.model_prob:>6.1%} {c.implied_prob:>6.1%} "
-              f"{c.edge:>+6.1%} {c.recommended_bet:>8.2f}")
+    # LLM validator — shadow by default: verdicts are recorded and shown but
+    # do not touch edge, sizing, or the slate.
+    agent_summary: dict | None = None
+    validation_records = []
+    if args.agent_mode != "off":
+        try:
+            from betting_agent.intelligence.validator import validate_picks
+
+            candidates, validation = validate_picks(
+                candidates, sport="NFL", mode=args.agent_mode,
+                injuries=injuries, qb1=qb1, player_teams=player_teams(candidates),
+                game_lines=game_lines_from_schedule(events, schedule),
+            )
+            validation_records = validation.records
+            agent_summary = validation.as_dict()
+        except Exception as exc:
+            logger.warning("Validator failed, continuing without it: %s", exc)
+
+    shadow = bool(agent_summary and agent_summary.get("shadow"))
+    _print_candidates(candidates, shadow)
+    if agent_summary:
+        print(f"\nValidator{' (SHADOW — verdicts recorded, stakes untouched)' if shadow else ''}: "
+              f"{agent_summary['validated_games']} games, "
+              f"{agent_summary['skipped_games']} skipped, "
+              f"${agent_summary['total_cost_usd']:.4f}")
     print(f"\n{len(candidates)} paper picks. These are NOT bets — Phase 3 "
           "validates the projections first.")
 
     if args.save:
         save_picks_to_db(candidates)
         print("Saved to picks table (bet_type='prop').")
+        if validation_records:
+            try:
+                from betting_agent.intelligence.validator import save_agent_validations_to_db
+
+                save_agent_validations_to_db(validation_records)
+            except Exception as exc:
+                logger.warning("Could not save agent validations: %s", exc)
 
     # On an unattended box (cron), Discord is the only way the picks get seen.
     if settings.discord_enabled:
@@ -397,7 +571,7 @@ def main() -> None:
             )
             if is_discord_configured("NFL", "PICKS"):
                 logger.info("Sending prop picks to Discord...")
-                send_picks_to_discord(candidates, bankroll, "NFL")
+                send_picks_to_discord(candidates, bankroll, "NFL", agent_summary=agent_summary)
         except Exception as exc:
             logger.warning("Discord notification failed: %s", exc)
 

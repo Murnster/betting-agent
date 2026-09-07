@@ -38,6 +38,7 @@ from betting_agent.sports.nfl.props import (
     MODELED_MARKETS,
     PROP_EDGE_FLOORS,
     ReceivingPropsModel,
+    active_player_keys,
     book_proxy_line,
     build_receiving_history,
     edge_floor,
@@ -266,12 +267,12 @@ def main() -> None:
         raise SystemExit("No games found.")
 
     # Most recent team per player, as of the replayed week — and only
-    # players a book would actually hang a line on: active this season and
-    # seen within the last three weeks. Without this the replay fills up
-    # with practice-squad names that DNP.
+    # players a book would actually hang a line on: seen within the last
+    # three regular-season slates (by rank, not subtraction — see
+    # active_player_keys). Without this the replay fills up with
+    # practice-squad names that DNP.
     before = train.sort_values("t")
-    recent_t = before.groupby("player_key")["t"].max()
-    active = recent_t[recent_t >= season * 100 + max(1, week - 3)].index
+    active = sorted(active_player_keys(before, asof_t))
     last_team = before.groupby("player_key")["team"].last().loc[active]
 
     if args.suggest:

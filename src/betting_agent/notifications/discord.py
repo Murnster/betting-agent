@@ -109,7 +109,8 @@ def _build_pick_embed(
     )
 
     if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
-        desc += f"\n**Verdict:** `{pick.agent_verdict}`"
+        shadow = bool((pick.extra or {}).get("agent", {}).get("shadow"))
+        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
 
     reasons = pick.agent_reasons or []
     if reasons:
@@ -146,9 +147,10 @@ def _build_summary_embed(
         or agent_summary.get("skipped_games")
         or agent_summary.get("total_cost_usd")
     ):
+        label = "Validator (SHADOW)" if agent_summary.get("shadow") else "Validator"
         desc += (
             "\n"
-            f"**Validator:** {agent_summary.get('validated_games', 0)} games  |  "
+            f"**{label}:** {agent_summary.get('validated_games', 0)} games  |  "
             f"**Skipped:** {agent_summary.get('skipped_games', 0)}  |  "
             f"**Cost:** ${agent_summary.get('total_cost_usd', 0.0):.4f}"
         )

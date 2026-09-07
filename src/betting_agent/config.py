@@ -99,7 +99,26 @@ class Settings(BaseSettings):
     )
     agent_model: str = Field(
         default="gemini/gemini-2.5-flash",
-        description="Default Gemini model for validator reasoning",
+        description=(
+            "Validator model, prefixed by provider: 'gemini/<model>' calls the "
+            "Gemini API, 'claude/<model>' runs the local `claude -p` CLI"
+        ),
+    )
+    agent_shadow: bool = Field(
+        default=True,
+        description=(
+            "Shadow mode: record validator verdicts (agent_validations, pick "
+            "cards, Discord) without changing edge, sizing, or dropping picks"
+        ),
+    )
+    agent_claude_web_search: bool = Field(
+        default=False, description="Allow the claude CLI validator to use WebSearch"
+    )
+    agent_claude_max_turns: int = Field(
+        default=4, description="Agentic turn cap per claude CLI validator call"
+    )
+    agent_claude_max_call_usd: float = Field(
+        default=0.25, description="Hard per-call spend cap passed to claude --max-budget-usd"
     )
     agent_premium_model: str = Field(
         default="gemini/gemini-2.5-pro",

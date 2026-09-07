@@ -267,3 +267,82 @@ hyperparameter experiment (`max_depth` 3→4, `eta` 0.01→0.02) is moot: the
 game-level model loses to the close regardless of tuning (Phase 1), so the
 retrain it required isn't worth the compute. The commit was `1bacf2b` if it
 ever needs archaeology.
+
+## Season-start readiness check — 2026-09-05 (kickoff Sep 9/10)
+
+Verified green: 421 tests pass, ruff clean, Postgres up at migration head,
+Odds API key live with 500/500 credits for September, all 32 Odds API club
+names bridge to nflreadpy abbreviations, 2026 schedule published (272 games),
+2024-25 stats load and both prop models fit + tune in ~14s, Discord NFL
+picks/results webhooks set, Ollama up (irrelevant to props). The picks table
+is EMPTY — the paper trade has not started and no crontab is installed.
+
+Found by dry-running week 1 against the published 2026 schedule — all but
+the cron fixed 2026-09-05 (tests 421 → 477; migration `d0e1f2a3b4c5`
+applied):
+
+- [x] **Heat board blind for the first ~3 weeks of a season.** Was
+  `recent_t >= asof_t - 3` (0 of 16 week-1 games had heat). Now
+  `active_player_keys()` windows by rank of distinct `t` over
+  regular-season slates only (the postseason carries two teams' players and
+  would have made week 1 blind a second way). Re-run of the dry run: 16/16
+  games have heat; replay.py uses the same helper.
+- [x] **Offseason team changes.** `current_teams(season)` overlays
+  `nfl.load_rosters` (ACT, receiving positions) onto the stats-derived team
+  in both the heat board and `generate_prop_candidates` (restores the
+  opponent/defense factor for movers). 72 players re-teamed on 2026-09-05;
+  A.J. Brown → NE, Chig Okonkwo → WAS. Fails open to the stats team.
+- [x] **Exact week from the schedule.** `nfl_week_for()` (matchup + nearest
+  date, heuristic fallback) shared by props.py and `make_stat_lookup`. The
+  three "season for a date" copies now call
+  `get_sport_config("NFL").season_for_date()`. `--today` also drops games
+  already kicked off so a second run cannot refresh picks with in-play
+  prices.
+- [x] **Props closing-line capture → CLV.** `props.py --closing
+  [--window-minutes 90]` (`accounting/prop_clv.py`): free events call →
+  held ungraded picks kicking off inside the window → per-event odds ONLY
+  for those games → `closing_line` + `closing_odds` stored; `clv` set only
+  when the line held, else the report counts line moves for/against.
+  `grade.py --date` no longer wipes prop CLV. Verified off-window: exits
+  with zero credits.
+- [x] **Injuries / QB1.** `sports/nfl/injuries.py`: Out/Doubtful → drop
+  (logged), Questionable → flag, team QB1 Out/Doubtful → `qb_out` flag on
+  every prop for that team. Flags ride on `candidate.extra["flags"]` →
+  pick card, Discord, validator payload. Empty/gated feeds → no-op (the
+  2026 injury feed unlocks Sep 10).
+- [x] **`claude -p` validator, shadow mode.** `ClaudeCliValidator`
+  (`AGENT_MODEL=claude/sonnet`, WebSearch on, 4 turns, $0.25/call cap,
+  $1/day) records verdicts to `agent_validations` without touching stakes
+  (`AGENT_SHADOW=true`). Smoke-tested live: REDUCED verdict with cited
+  reasons, $0.09/game with search, $0.014 without. Gotchas recorded in
+  CLAUDE.md (`--bare` breaks login; WebSearch needs `--allowedTools`;
+  default context is ~29k tokens unless the system prompt is replaced).
+  Prop results keyed by player — two "over" props in one game used to
+  collide and the second was dropped.
+  - [ ] After 4–6 weeks: compare `agent_validations.verdict` with
+    `picks.result` (NO_BET/REDUCED picks that lost vs won). Only then
+    consider `AGENT_SHADOW=false`.
+- [ ] **Cron for the props loop — deferred by the user ("we'll do this
+  later"); run by hand until then.** Proposed schedule (machine is
+  America/Halifax, ADT = ET+1):
+  - Sun + Sat: 12:45 `props.py --today --save --suggest 6`
+  - Thu + Mon: 19:00 `props.py --today --save`
+  - game days, hourly 12:00–22:00: `props.py --closing`
+  - daily 09:00 `grade.py`; daily 03:15 `backup_db.py`
+  Drop `daily_workflow.sh` from consideration — it is the NBA/NHL
+  game-market loop.
+
+Free model inputs not yet used (Phase 4 candidates — only after the paper
+baseline exists, and each gated by `props_diagnostic.py`): schedule
+`spread_line`/`total_line` are published for upcoming weeks (16/16 in week 1)
+and carry game script; `load_snap_counts` (snap share = the role-stability
+signal the calibration note asks for); `load_ff_opportunity` (nflverse
+expected receptions/yards); targets × catch-rate × yards-per-target
+decomposition instead of raw stat means; rushing yards for RBs once the two
+receiving markets have a record.
+
+`claude -p` as a validator: implemented 2026-09-05 as
+`intelligence/validator/claude_cli.py` (see the readiness list above and the
+validator paragraph in CLAUDE.md). The deterministic injury check stays
+upstream of it; the LLM is for what the data can't express (new OC, holdout,
+QB change mid-week), not for re-deriving the model.

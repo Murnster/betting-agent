@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Automated sports betting ETL pipeline and prediction engine. Generates "+EV Picks" using XGBoost game models, distributional NFL player-prop models, Kelly Criterion sizing, and optional Ollama sentiment analysis. Four sports are implemented (NFL, NBA, NHL, MLB) but **NHL and MLB are frozen** (`active=False` in the registry — reachable by explicit `--sport`, hidden from `available_sports()` and routine loops) until NFL+NBA are proven. The Aug 2026 real-line backtest showed the NFL game-level model cannot beat closing prices, so the live NFL strategy is **player props** (`scripts/props.py`, paper-trading from Sep 2026). Runs entirely on local hardware ($0-$15/month).
+Automated sports betting ETL pipeline and prediction engine. Generates "+EV Picks" using XGBoost game models, distributional NFL player-prop models, Kelly Criterion sizing, and optional Ollama sentiment analysis. Four sports are implemented (NFL, NBA, NHL, MLB) but **the owner only cares about NFL**: NHL and MLB are frozen (`active=False` in the registry — reachable by explicit `--sport`, hidden from `available_sports()` and routine loops) and the NBA pick path is known-broken and deprioritized (see TODO.md). The Aug 2026 real-line backtest showed the NFL game-level model cannot beat closing prices, so the live NFL strategy is **player props** (`scripts/props.py`, paper-trading through the 2026 season). Runs entirely on local hardware ($0-$15/month).
 
-Open follow-ups and deferred decisions live in `TODO.md` at the repo root — check it before starting work, and add to it rather than leaving loose ends in commit messages.
+Open follow-ups and deferred decisions live in `TODO.md` at the repo root — check it before starting work, and add to it rather than leaving loose ends in commit messages. `AGENTS.md` holds style conventions (Ruff, 100-char lines, test naming); don't duplicate them here.
 
 ## Development Commands
 
@@ -32,6 +32,8 @@ uv run python scripts/props.py --save --max-events 5
 uv run python scripts/props.py --pick-games          # choose games interactively (saves credits)
 uv run python scripts/props.py --suggest 3           # free pre-screen, auto-picks 3 hottest games
 uv run python scripts/props.py --today --save        # cron mode: today's slate only, off-days exit free
+uv run python scripts/props.py --closing             # pre-kickoff: closing price/line on held picks → CLV
+uv run python scripts/props.py --today --save --agent-mode all   # LLM validator on every game (shadow)
 uv run python scripts/replay.py --random             # dress-rehearse a past week (synthetic lines)
 uv run python scripts/replay.py --random-sunday --suggest 4   # weekend rehearsal: heat board + top-4 games
 uv run python scripts/replay.py --date 2025-12-28 --suggest 4 # same, for a specific calendar day
@@ -53,13 +55,18 @@ uv run python scripts/grade.py
 uv run python scripts/backtest.py --sport NFL --start-season 2019 --end-season 2023
 
 # Tests
-uv run pytest tests/ -v                 # all tests (391 tests)
+uv run pytest tests/ -v                 # all tests (~480 tests, ~8s)
 uv run pytest tests/test_ev.py -v       # single file
 uv run pytest tests/test_ev.py::test_name -v  # single test
 
-# Lint
-uv run ruff check src/ tests/
-uv run ruff check --fix src/ tests/     # auto-fix
+# Reports / diagnostics
+uv run python scripts/report.py --sport NFL          # ROI + CLV + bankroll report
+uv run python scripts/model_vs_market.py             # game-model vs closing-line diagnostic
+uv run python scripts/backup_db.py                   # pg_dump to backups/postgres/, prunes >30d
+
+# Lint (scripts/ is linted too)
+uv run ruff check src/ tests/ scripts/
+uv run ruff check --fix src/ tests/ scripts/         # auto-fix
 
 # Install packages
 uv add <package>
@@ -74,6 +81,21 @@ Three layers: **Extraction** (data loaders + Odds API + weather) → **Intellige
 `sports/nfl/props.py` projects receptions (negative binomial) and receiving yards (shifted lognormal, level-dependent residuals) from nflreadpy weekly stats: shrunk exponentially-weighted player means × opponent-position defense factor, with an isotonic P(over) calibration layer. Always call `tune_dispersion()` after `fit()`. Prop odds come from the per-event endpoint (`OddsAPIClient.fetch_event_odds()` — props are NOT on the sport-level `/odds` endpoint). Prop picks grade from player stats via `grade_prop_picks()`; a player missing from a published week's stats voids the pick (result `"void"`, pnl 0), while an unpublished week leaves it ungraded. **Grading finalizes NFL games itself** via `sports/nfl/results.py finalize_nfl_games()` (free, from nflreadpy) — props.py writes its Game rows as `"scheduled"` and grading requires `"final"`, so without this nothing settles.
 
 Selection policy (set by `scripts/props_diagnostic.py`, a walk-forward pick-level backtest — re-run it after any projection change): per-market edge floors in `PROP_EDGE_FLOORS` (10% receptions, 15% receiving yards; `--min-edge` overrides), one pick per player per slate (both markets on one player are near-duplicate bets), and same-game Kelly scaling. The isotonic calibrator trains on `book_proxy_line()` placements as well as pseudo-lines, because real lines sit above our shrunk projection. Residual overconfidence is ~5pp, which the floors are sized to cover.
+
+### In-season NFL props loop (what actually runs Sep–Feb)
+
+Everything except the per-event odds fetch is free. The Odds API free tier is 500 credits/month; `fetch_events()` costs nothing, `fetch_event_odds()` costs one credit **per market** (two per game for the two modeled markets), so a full 16-game slate is ~32 credits and `--suggest N` / `--max-events N` bound the spend.
+
+1. Game day (Thu/Sun/Mon): `props.py --today --save [--suggest N]`. `--today` matches kickoff to the **machine's local calendar day** (this box is America/Halifax, UTC−3, so US primetime still lands on its own day) and drops games that have already kicked off, so a re-run never refreshes saved picks with in-play prices. Off-days exit before any model fitting or paid call. After the models fit, the run loads free season context: the published roster (`current_teams()` — offseason movers land on their new side; 72 re-teamed in Sep 2026), the schedule (`nfl_week_for()` gives the exact week and spread/total for the validator payload), the official injury report and depth charts (`sports/nfl/injuries.py`). Out/Doubtful players are dropped; Questionable and a QB1 who is Out are attached as flags on the pick card. Then the LLM validator runs if `AGENT_ENABLED` (shadow mode by default — see below).
+2. Pre-kickoff: `props.py --closing [--window-minutes 90]`. Free events call → held ungraded prop picks in games kicking off inside the window → per-event odds fetch **only for those games** → `closing_line`/`closing_odds` stored on each pick; `clv` is set only when the line held (a price at a different number is not comparable) and `report.py` counts line moves for/against otherwise. Zero credits when nothing is due. This is the only source of CLV for props — `update_clv_for_picks()` reads the game-market `odds` table, and `grade.py --date` deliberately leaves prop CLV alone on reset.
+3. Next morning: `grade.py`. It finalizes NFL Game rows from nflreadpy schedules, then grades props from `load_player_stats()`. Week N's `stats_player_week_<season>.parquet` doesn't exist on nflverse until week N is played — `load_player_stats()` tolerates a missing season (warns, continues), and a pending pick simply stays ungraded until the parquet appears.
+4. Weekly: `report.py --sport NFL` / `bets.py ledger`. Real stakes go through `bets.py set`.
+
+**Validator (shadow).** `AGENT_MODEL` picks the provider by prefix: `claude/<model>` runs the local `claude -p` CLI (`intelligence/validator/claude_cli.py`), `gemini/<model>` the Gemini API. With `AGENT_SHADOW=true` (default) verdicts are recorded to `agent_validations`, shown on pick cards/Discord as `SHADOW`, but never change edge, sizing, or the slate — flip it only once `agent_validations.verdict` vs `picks.result` shows the verdicts add value. The CLI provider replaces the system prompt with the rules, passes the payload on stdin, loads no settings, and runs from a temp dir (~250 input tokens + payload; a default run from the repo would load ~29k tokens of CLAUDE.md/memory). Do NOT use `--bare` — it skips keychain reads and reports "Not logged in". WebSearch needs both `--tools WebSearch` and `--allowedTools WebSearch` in print mode. Measured Sep 2026 on Sonnet: ~$0.014/game without search, ~$0.09 with; `--max-budget-usd` caps each call at `AGENT_CLAUDE_MAX_CALL_USD` (0.25) and `AGENT_DAILY_BUDGET_USD` (1.00) gates the day. Prop results are keyed by `(bet_type, pick_side, player)` — two "over" props in one game used to collide.
+
+nflreadpy gates `load_injuries`/`load_rosters_weekly` on its own `get_current_season()`, which flips to the new season on the Thursday after Labor Day — requesting the new season before then raises `ValueError: Season must be between …`. `load_schedules` and `load_rosters` accept the new season earlier. Week-1 projections therefore rest entirely on the prior two seasons of stats.
+
+`scripts/daily_workflow.sh` / `setup_cron.sh` are the older game-market (NBA/NHL) automation and are not what the props loop uses; no crontab is installed as of Sep 2026 (the user runs the sequence above by hand; the proposed schedule is in TODO.md).
 
 ### Multi-Sport Registry
 
@@ -103,6 +125,10 @@ Saved to `saved_models/<SPORT>/`: `classifier.json`, `calibrator.joblib`, `home_
 
 **NFL backtests use real closing lines** (`sports/nfl/market.py` from nflreadpy schedules); other sports still use synthetic odds from `_generate_market_odds()` (model-centered + Gaussian noise + 4.5% vig, never included as features). Use `--flat-stake` results to judge selection skill — Kelly ROI on small samples is sizing variance.
 
+**The props time index `t = season*100 + week` is not contiguous across seasons.** `ReceivingPropsModel` and `props.py` order history by `t`, which is fine for "strictly before" comparisons but wrong for arithmetic windows: `t - 3` in week 1 of a new season points at a `t` no game has (e.g. 202599), so any "seen in the last K weeks" filter written as subtraction silently excludes every player at the start of a season. Use `active_player_keys()` (`sports/nfl/props.py`): it windows by rank of distinct `t` values and counts **regular-season slates only** — the postseason weeks carry two teams' worth of players and would otherwise make week 1 nearly blind again.
+
+**nflreadpy depth charts ignore the season filter** (`load_depth_charts([2026])` returns the whole ~499k-row current-format dataset, `dt` is an ISO string) and teams publish on different days: take `dt.max()` **per team**, then `pos_abb == "QB"` (not `pos_grp`, which is a formation label like "3WR 1TE") and `pos_rank == 1`. The name column is `player_name`, not `full_name`.
+
 **Sentiment is optional.** `is_ollama_available()` is checked before any Ollama call. If unavailable, picks generate from ML alone. Sentiment shifts the model probability (by at most `sentiment_weight`, default 0.02) before the edge is computed, so edge and Kelly sizing stay consistent.
 
 **Season is sport-aware.** Use `SportConfig.season_for_date(date)` — an NFL/NBA game in January belongs to the previous year's season, and mistagging it triggers Elo's per-season mean reversion mid-season.
@@ -113,7 +139,7 @@ Saved to `saved_models/<SPORT>/`: `classifier.json`, `calibrator.joblib`, `home_
 
 ## Configuration
 
-All settings via pydantic-settings in `config.py`, reading from `.env`. Key tunables: `min_edge_pct` (0.015), `max_kelly_pct` (0.05), `max_bet_pct` (0.07), `sentiment_weight` (0.02), `starting_bankroll` (1000), `ollama_model` ("llama3.1:8b"), `nba_api_rate_limit` (0.6s).
+All settings via pydantic-settings in `config.py`, reading from `.env`. Key tunables: `min_edge_pct` (0.015), `max_kelly_pct` (0.05), `max_bet_pct` (0.07), `sentiment_weight` (0.02), `starting_bankroll` (1000), `ollama_model` ("llama3.1:8b"), `nba_api_rate_limit` (0.6s). Validator: `agent_enabled`, `agent_model` (`claude/sonnet` in this box's `.env`), `agent_shadow` (True), `agent_claude_web_search`, `agent_claude_max_turns` (4), `agent_claude_max_call_usd` (0.25), `agent_daily_budget_usd`.
 
 ## Key Design Decisions
 

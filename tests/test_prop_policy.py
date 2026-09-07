@@ -125,6 +125,8 @@ class TestGeneratePropCandidates:
 
         def project(self, player_key, season, week, opponent=None):
             model = self
+            self.calls = getattr(self, "calls", [])
+            self.calls.append((player_key, season, week, opponent))
 
             class _P:
                 mean = 3.0
@@ -138,11 +140,68 @@ class TestGeneratePropCandidates:
 
             return _P()
 
-    def _generate(self, models, min_edge=None):
+    def _generate(self, models, min_edge=None, **kwargs):
         return props_script.generate_prop_candidates(
             [self._event()], models, bankroll=1000.0,
-            min_edge=min_edge, season=2026,
+            min_edge=min_edge, season=2026, **kwargs,
         )
+
+    def test_roster_overlay_resolves_opponent_for_a_mover(self):
+        # History says Star Guy plays for KC; the 2026 roster says he moved
+        # to BUF. Opponent (defense factor) must follow the roster.
+        model = self._Model(0.72)
+        self._generate({"player_receptions": model},
+                       current_teams={"star guy": "BUF"})
+        opp = {pk: o for pk, _, _, o in model.calls}
+        assert opp["star guy"] == "KC"
+        assert opp["other guy"] == "BUF"   # unchanged: history team KC
+
+    def test_unknown_team_leaves_opponent_unset(self):
+        model = self._Model(0.72)
+        self._generate({"player_receptions": model}, current_teams={"star guy": "PHI"})
+        opp = {pk: o for pk, _, _, o in model.calls}
+        assert opp["star guy"] is None
+
+    def test_exact_week_comes_from_the_schedule(self):
+        model = self._Model(0.72)
+        sched = pd.DataFrame({
+            "home_team": ["KC"], "away_team": ["BUF"], "season": [2026],
+            "game_date": [pd.Timestamp("2026-09-13")], "week": [1],
+        })
+        self._generate({"player_receptions": model}, schedule=sched)
+        assert {w for _, _, w, _ in model.calls} == {1}
+
+    def test_heuristic_week_without_schedule(self):
+        model = self._Model(0.72)
+        self._generate({"player_receptions": model})
+        assert {w for _, _, w, _ in model.calls} == {2}   # Sep 13 → date heuristic
+
+    def test_out_player_is_dropped_and_questionable_flagged(self):
+        models = {"player_receptions": self._Model(0.72)}
+        injuries = pd.DataFrame({
+            "full_name": ["Star Guy", "Other Guy"], "team": ["KC", "KC"],
+            "position": ["WR", "TE"], "report_status": ["Out", "Questionable"],
+            "practice_status": [None, None], "gsis_id": ["1", "2"],
+        })
+        out = self._generate(models, injuries=injuries)
+        assert [c.player for c in out] == ["Other Guy"]
+        assert out[0].extra["flags"][0]["type"] == "player_injury"
+        assert out[0].extra["flags"][0]["severity"] == "medium"
+        # Single survivor → no same-game correlation scaling.
+        assert out[0].recommended_bet == pytest.approx(
+            props_script.recommended_bet(0.72, -110, 0.72 - 0.5, 1000.0)[1]
+        )
+
+    def test_qb1_out_flags_every_prop_on_that_team(self):
+        models = {"player_receptions": self._Model(0.72)}
+        injuries = pd.DataFrame({
+            "full_name": ["Franchise QB"], "team": ["KC"], "position": ["QB"],
+            "report_status": ["Out"], "practice_status": [None], "gsis_id": ["qb1"],
+        })
+        out = self._generate(models, injuries=injuries, qb1={"KC": ("Franchise QB", "qb1")})
+        assert len(out) == 2
+        for c in out:
+            assert any(f["type"] == "qb_out" for f in c.extra["flags"])
 
     def test_one_pick_per_player_and_correlation_scaled(self):
         # 0.72 under vs 0.50 fair = 22% edge, clears both floors.
@@ -250,14 +309,67 @@ class TestRankEventsByModelHeat:
 
     def test_inactive_player_is_ignored(self):
         hist = self._history()
-        # "hot guy" last seen in week 5 of the PREVIOUS season — not quotable.
-        hist = hist[~((hist["player_key"] == "hot guy") & (hist["t"] == 202601))]
+        # "hot guy" last seen two slates before the three-slate window that
+        # "meh guy" defines (202504, 202505, 202601) — not quotable.
+        hist = hist[~((hist["player_key"] == "hot guy") & (hist["t"] >= 202503))]
         models = {"player_receptions": self._Model({"hot guy": 0.75})}
         ranked = props_script.rank_events_by_model_heat(
             [self._event("Kansas City Chiefs", "Buffalo Bills")],
             models, hist, season=2026,
         )
         assert ranked[0][1] == 0
+
+    def test_week_one_sees_last_seasons_regulars(self):
+        # History ends at 2025 week 22 (Super Bowl); the event is 2026 week 1.
+        # Under `recent_t >= asof_t - 3` nobody qualified; by rank of the
+        # regular-season slates the board is populated — and the two-team
+        # postseason slates must not shrink the window.
+        rows = []
+        for pk, team in (("hot guy", "KC"), ("meh guy", "MIA")):
+            for w in range(10, 19):
+                rows.append({"player_key": pk, "team": team, "t": 202500 + w,
+                             "receptions": 4, "season_type": "REG"})
+        for w in (19, 20, 21, 22):   # only KC in the playoffs
+            rows.append({"player_key": "hot guy", "team": "KC", "t": 202500 + w,
+                         "receptions": 4, "season_type": "POST"})
+        hist = pd.DataFrame(rows)
+        models = {"player_receptions": self._Model({"hot guy": 0.75, "meh guy": 0.75})}
+        sched = pd.DataFrame({
+            "home_team": ["KC", "MIA"], "away_team": ["BUF", "NYJ"], "season": [2026] * 2,
+            "game_date": [pd.Timestamp("2026-09-13")] * 2, "week": [1, 1],
+        })
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Miami Dolphins", "New York Jets"),
+             self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, hist, season=2026, schedule=sched,
+        )
+        assert [n for _, n, _ in ranked] == [1, 1]
+
+    def test_mid_season_window_is_the_last_three_slates(self):
+        hist = self._history()
+        # Event in week 6 of 2025 (asof 202506): window = 202503-202505.
+        sched = pd.DataFrame({
+            "home_team": ["KC"], "away_team": ["BUF"], "season": [2025],
+            "game_date": [pd.Timestamp("2025-10-12")], "week": [6],
+        })
+        stale = hist[~((hist["player_key"] == "hot guy") & (hist["t"] >= 202503))]
+        models = {"player_receptions": self._Model({"hot guy": 0.75, "meh guy": 0.75})}
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, stale, season=2025, schedule=sched,
+        )
+        assert ranked[0][1] == 0   # hot guy stale, meh guy is MIA
+
+    def test_roster_overlay_moves_a_player_to_his_new_game(self):
+        # "hot guy" last played for KC but the 2026 roster has him in MIA.
+        models = {"player_receptions": self._Model({"hot guy": 0.75})}
+        ranked = props_script.rank_events_by_model_heat(
+            [self._event("Miami Dolphins", "New York Jets"),
+             self._event("Kansas City Chiefs", "Buffalo Bills")],
+            models, self._history(), season=2026, current_teams={"hot guy": "MIA"},
+        )
+        assert ranked[0][0]["home_team"] == "Miami Dolphins"
+        assert ranked[0][1] == 1 and ranked[1][1] == 0
 
     def test_lopsided_probability_is_not_heat(self):
         # A book wouldn't hang -110/-110 on a 90/10 proposition.
@@ -281,18 +393,27 @@ class TestEventsCommencingToday:
 
     def test_keeps_only_local_today(self):
         from datetime import datetime, timedelta
-        now = datetime.now().astimezone()
+        now = datetime.now().astimezone().replace(hour=8, minute=0)
         today_game = self._event(now.replace(hour=13, minute=0))
         thursday_game = self._event(now + timedelta(days=4))
-        out = props_script._events_commencing_today([today_game, thursday_game])
+        out = props_script._events_commencing_today([today_game, thursday_game], now=now)
         assert out == [today_game]
 
     def test_late_local_kickoff_still_counts_as_today(self):
         # SNF at 8:20pm local is already tomorrow in UTC — must still match.
         from datetime import datetime
-        now = datetime.now().astimezone()
+        now = datetime.now().astimezone().replace(hour=8, minute=0)
         snf = self._event(now.replace(hour=20, minute=20))
-        assert props_script._events_commencing_today([snf]) == [snf]
+        assert props_script._events_commencing_today([snf], now=now) == [snf]
+
+    def test_started_game_is_dropped(self):
+        # A second run after kickoff must not refresh saved picks with
+        # in-play prices.
+        from datetime import datetime
+        now = datetime.now().astimezone().replace(hour=15, minute=0)
+        early = self._event(now.replace(hour=13, minute=0))
+        late = self._event(now.replace(hour=16, minute=25))
+        assert props_script._events_commencing_today([early, late], now=now) == [late]
 
     def test_malformed_commence_time_is_dropped(self):
         assert props_script._events_commencing_today(
@@ -454,3 +575,52 @@ class TestFinalizeNflGames:
     def test_no_pending_games_skips_the_load(self, monkeypatch):
         mod = self._patch(monkeypatch, [], self._sched())
         assert mod.finalize_nfl_games() == 0
+
+
+class TestScheduleHelpers:
+    """Exact NFL week from the published schedule (replaces the date heuristic)."""
+
+    def _sched(self):
+        return pd.DataFrame({
+            "home_team": ["KC", "BUF", "DAL"], "away_team": ["LV", "MIA", "PHI"],
+            "season": [2026] * 3, "week": [1, 1, 2],
+            "game_date": [pd.Timestamp("2026-09-13"), pd.Timestamp("2026-09-13"),
+                          pd.Timestamp("2026-09-20")],
+        })
+
+    def test_matchup_and_date_resolve_the_week(self):
+        from betting_agent.sports.nfl.props import nfl_week_for
+        assert nfl_week_for(date(2026, 9, 13), 2026, self._sched(), "KC", "LV") == 1
+        assert nfl_week_for(date(2026, 9, 20), 2026, self._sched(), "DAL", "PHI") == 2
+
+    def test_unknown_matchup_falls_back_to_nearest_date(self):
+        from betting_agent.sports.nfl.props import nfl_week_for
+        assert nfl_week_for(date(2026, 9, 21), 2026, self._sched(), "NYG", "WAS") == 2
+
+    def test_no_schedule_uses_heuristic(self):
+        from betting_agent.sports.nfl.props import nfl_week_for
+        assert nfl_week_for(date(2026, 9, 13), 2026, None) == 2
+        assert nfl_week_for(date(2026, 9, 13), 2026, pd.DataFrame()) == 2
+
+    def test_far_date_uses_heuristic(self):
+        from betting_agent.sports.nfl.props import nfl_week_for
+        # Nothing within two days of Oct 30 in this schedule.
+        assert nfl_week_for(date(2026, 10, 30), 2026, self._sched()) == 9
+
+    def test_active_window_is_by_rank_not_subtraction(self):
+        from betting_agent.sports.nfl.props import active_player_keys
+        hist = pd.DataFrame({
+            "player_key": ["a", "a", "a", "b"], "t": [202516, 202517, 202518, 202510],
+        })
+        assert active_player_keys(hist, 202601) == {"a"}
+        assert active_player_keys(hist, 202510) == set()
+
+    def test_game_lines_from_schedule(self):
+        sched = self._sched().assign(spread_line=[-3.5, 1.0, None], total_line=[47.5, 44.0, 50.0])
+        events = [{"id": "e1", "home_team": "Kansas City Chiefs",
+                   "away_team": "Las Vegas Raiders", "commence_time": "2026-09-13T17:00:00Z"},
+                  {"id": "e3", "home_team": "Dallas Cowboys",
+                   "away_team": "Philadelphia Eagles", "commence_time": "2026-09-20T20:25:00Z"}]
+        assert props_script.game_lines_from_schedule(events, sched) == {
+            "e1": (-3.5, 47.5), "e3": (None, 50.0),
+        }

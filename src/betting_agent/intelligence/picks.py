@@ -592,8 +592,8 @@ def format_picks_cli(
         or agent_summary.get("total_cost_usd")
     ):
         lines.append(
-            "  Validator: "
-            f"{agent_summary.get('validated_games', 0)} games  |  "
+            ("  Validator (SHADOW): " if agent_summary.get("shadow") else "  Validator: ")
+            + f"{agent_summary.get('validated_games', 0)} games  |  "
             f"Skipped: {agent_summary.get('skipped_games', 0)}  |  "
             f"Cost: ${agent_summary.get('total_cost_usd', 0.0):.4f}"
         )
@@ -634,9 +634,10 @@ def format_picks_cli(
             f"Implied: {pick.implied_prob:.1%}  ",
         ))
         if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+            shadow = bool((pick.extra or {}).get("agent", {}).get("shadow"))
             lines.append(_card_row(
                 f"       Verdict: {pick.agent_verdict}",
-                "Validator  ",
+                "Validator (shadow)  " if shadow else "Validator  ",
             ))
         if pick.agent_reasons:
             reason = ", ".join(pick.agent_reasons[:2])[:48]

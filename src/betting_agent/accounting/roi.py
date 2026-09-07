@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 
+from betting_agent.accounting.prop_clv import line_moved_for_pick
 from betting_agent.db.models import Pick
 from betting_agent.db.session import get_session
 
@@ -61,7 +62,23 @@ def get_summary(
     avg_clv = sum(p.clv for p in clv_picks) / len(clv_picks) if clv_picks else None
     clv_hits = sum(1 for p in clv_picks if p.clv > 0)
 
+    # Props: the book may have moved the NUMBER rather than the price. Count
+    # moves for/against the pick from the captured closing line.
+    moves_for = moves_against = 0
+    for p in picks:
+        closing_line = getattr(p, "closing_line", None)
+        line = getattr(p, "line", None)
+        if closing_line is None or line is None:
+            continue
+        moved = line_moved_for_pick(p.pick_side or "", float(line), float(closing_line))
+        if moved is True:
+            moves_for += 1
+        elif moved is False:
+            moves_against += 1
+
     return {
+        "line_moves_for": moves_for,
+        "line_moves_against": moves_against,
         "total_bets": total,
         "wins": wins,
         "losses": losses,
@@ -165,6 +182,11 @@ def format_roi_report(
         lines.append(
             f"  CLV hit rate: {summary['clv_hit_rate_pct']:.1f}% "
             f"(beat the close on {summary['clv_sample']} priced picks)"
+        )
+    if summary.get("line_moves_for") or summary.get("line_moves_against"):
+        lines.append(
+            f"  Line moves:   {summary['line_moves_for']} for / "
+            f"{summary['line_moves_against']} against (props whose number moved by close)"
         )
 
     from betting_agent.accounting.ledger import ledger_summary

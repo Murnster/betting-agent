@@ -201,8 +201,12 @@ def grade_picks(target_date: date | None = None) -> int:
                 pick.result = None
                 pick.pnl = None
                 pick.graded_at = None
-                pick.clv = None
-                pick.closing_odds = None
+                # Prop CLV is captured from the per-event endpoint before
+                # kickoff (accounting/prop_clv.py), not rebuilt from the odds
+                # table, so a re-grade must leave it alone.
+                if pick.bet_type != "prop":
+                    pick.clv = None
+                    pick.closing_odds = None
             session.flush()
             logger.info("Reset %d picks for %s", len(picks_to_reset), target_date)
 

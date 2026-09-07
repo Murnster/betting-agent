@@ -73,7 +73,7 @@ def test_validate_picks_top_mode_limits_games(monkeypatch):
         lambda: _NoSearch(),
     )
     monkeypatch.setattr(
-        "betting_agent.intelligence.validator.orchestrator.GeminiValidator",
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
         lambda: _Validator(),
     )
     monkeypatch.setattr(
@@ -131,7 +131,7 @@ def test_validate_picks_reduces_and_drops(monkeypatch):
         lambda: _NoSearch(),
     )
     monkeypatch.setattr(
-        "betting_agent.intelligence.validator.orchestrator.GeminiValidator",
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
         lambda: _Validator(),
     )
     monkeypatch.setattr(
@@ -158,7 +158,7 @@ def test_validate_picks_reduces_and_drops(monkeypatch):
         bankroll_at_pick=1000.0,
     )
 
-    validated, summary = validate_picks([ml, total], sport="NFL", mode="all")
+    validated, summary = validate_picks([ml, total], sport="NFL", mode="all", shadow=False)
 
     assert len(validated) == 1
     assert validated[0].agent_verdict == "REDUCED"
@@ -182,7 +182,7 @@ def test_validate_picks_fails_open_when_validator_errors(monkeypatch):
         lambda: _NoSearch(),
     )
     monkeypatch.setattr(
-        "betting_agent.intelligence.validator.orchestrator.GeminiValidator",
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
         lambda: _Validator(),
     )
     monkeypatch.setattr(
@@ -232,7 +232,7 @@ def test_validate_picks_continues_after_single_game_failure(monkeypatch):
         lambda: _NoSearch(),
     )
     monkeypatch.setattr(
-        "betting_agent.intelligence.validator.orchestrator.GeminiValidator",
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
         lambda: _Validator(),
     )
     monkeypatch.setattr(
@@ -273,7 +273,7 @@ def test_validate_picks_skips_search_when_validator_unavailable(monkeypatch):
         lambda: _Search(),
     )
     monkeypatch.setattr(
-        "betting_agent.intelligence.validator.orchestrator.GeminiValidator",
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
         lambda: _Validator(),
     )
     monkeypatch.setattr(
@@ -325,3 +325,140 @@ def test_save_agent_validations_preserves_duplicate_attempts(monkeypatch):
     save_agent_validations_to_db([record, record])
 
     assert len(added) == 2
+
+
+def _prop(player: str, side: str = "over", edge: float = 0.15):
+    return BetCandidate(
+        game_id=0, external_id="evt-1", home_team="Kansas City Chiefs",
+        away_team="Buffalo Bills", game_date=date(2026, 9, 12),
+        scheduled_game_date=date(2026, 9, 13), sport="NFL", bet_type="prop",
+        pick_side=side, player=player, market="player_receptions", line=4.5,
+        model_prob=0.5 + edge, implied_prob=0.5, edge=edge, odds=-110,
+        kelly_fraction=0.04, recommended_bet=40.0, bankroll_at_pick=1000.0,
+        extra={"projection_mean": 3.4, "projection_games": 12,
+               "recent_values": [3, 4, 2, 5], "team": "KC"},
+    )
+
+
+def _prop_result(*items):
+    return GameValidationResult(
+        game_id="evt-1",
+        results=[ValidationPickResult(
+            bet_type="prop", pick_side=side, player=player, verdict=verdict,
+            edge_adjustment=adj, adjusted_edge=0.1, kelly_multiplier=mult, reasons=[reason],
+        ) for player, side, verdict, adj, mult, reason in items],
+        tokens_used=UsageTokens(input=500, output=50),
+        estimated_cost_usd=0.04,
+    )
+
+
+def _wire(monkeypatch, validator):
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.TavilySearchClient",
+        lambda: _NoSearch(),
+    )
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
+        lambda: validator,
+    )
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.budget_allows",
+        lambda target_date, run_cost: True,
+    )
+
+
+def test_shadow_mode_records_verdicts_without_touching_stakes(monkeypatch):
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            return _prop_result(
+                ("Travis Kelce", "over", "NO_BET", -0.03, 1.0, "ruled out Friday"),
+                ("Rashee Rice", "over", "REDUCED", -0.02, 0.5, "questionable"),
+            )
+
+    _wire(monkeypatch, _Validator())
+    kelce, rice = _prop("Travis Kelce"), _prop("Rashee Rice")
+    validated, summary = validate_picks([kelce, rice], sport="NFL", mode="all", shadow=True)
+
+    assert summary.shadow is True
+    assert validated == [kelce, rice]                    # NO_BET kept
+    assert kelce.agent_verdict == "NO_BET" and rice.agent_verdict == "REDUCED"
+    for c in (kelce, rice):
+        assert c.edge == 0.15 and c.kelly_fraction == 0.04 and c.recommended_bet == 40.0
+        assert c.extra["agent"]["shadow"] is True
+    assert rice.extra["agent"]["proposed_kelly_multiplier"] == 0.5
+    assert [r.verdict for r in summary.records] == ["NO_BET", "REDUCED"]
+    assert summary.records[0].pick_side.startswith("Travis Kelce")
+    assert summary.records[0].adjusted_edge == 0.12   # what it WOULD have been
+
+
+def test_live_mode_applies_prop_verdicts(monkeypatch):
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            return _prop_result(
+                ("Travis Kelce", "over", "NO_BET", -0.03, 1.0, "ruled out"),
+                ("Rashee Rice", "over", "REDUCED", -0.02, 0.5, "questionable"),
+            )
+
+    _wire(monkeypatch, _Validator())
+    kelce, rice = _prop("Travis Kelce"), _prop("Rashee Rice")
+    validated, _ = validate_picks([kelce, rice], sport="NFL", mode="all", shadow=False)
+    assert validated == [rice]
+    assert rice.edge == 0.13 and rice.recommended_bet == 20.0
+
+
+def test_two_same_side_props_in_one_game_are_keyed_by_player(monkeypatch):
+    """Before, results keyed on (bet_type, pick_side) and the second 'over'
+    silently overwrote the first."""
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            assert len(payload.picks) == 2
+            assert {p.player for p in payload.picks} == {"Travis Kelce", "Rashee Rice"}
+            assert payload.picks[0].recent_values == [3.0, 4.0, 2.0, 5.0]
+            return _prop_result(
+                ("Travis Kelce", "over", "UNCHANGED", 0.0, 1.0, "fine"),
+                ("Rashee Rice", "over", "REDUCED", -0.01, 0.8, "limited"),
+            )
+
+    _wire(monkeypatch, _Validator())
+    kelce, rice = _prop("Travis Kelce"), _prop("Rashee Rice")
+    validate_picks([kelce, rice], sport="NFL", mode="all", shadow=True)
+    assert kelce.agent_verdict == "UNCHANGED"
+    assert rice.agent_verdict == "REDUCED"
+
+
+def test_injury_flags_and_game_lines_reach_the_payload(monkeypatch):
+    import pandas as pd
+
+    captured = {}
+
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            captured["payload"] = payload
+            return _prop_result(("Travis Kelce", "over", "UNCHANGED", 0.0, 1.0, "ok"))
+
+    _wire(monkeypatch, _Validator())
+    kelce = _prop("Travis Kelce")
+    kelce.extra["flags"] = [{"type": "qb_out", "team": "KC", "severity": "high",
+                             "detail": "KC QB1 Patrick Mahomes is Out", "player": "Travis Kelce"}]
+    injuries = pd.DataFrame({
+        "full_name": ["Travis Kelce"], "team": ["KC"], "position": ["TE"],
+        "report_status": ["Questionable"], "practice_status": [None], "gsis_id": ["1"],
+    })
+    validate_picks([kelce], sport="NFL", mode="all", shadow=True, injuries=injuries,
+                   qb1={}, player_teams={"travis kelce": "KC"},
+                   game_lines={"evt-1": (-3.5, 47.5)})
+    payload = captured["payload"]
+    assert payload.spread_line == -3.5 and payload.total_line == 47.5
+    assert {f.type for f in payload.deterministic_flags} == {"player_injury", "qb_out"}

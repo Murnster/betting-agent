@@ -20,6 +20,7 @@ import pandas as pd
 
 from betting_agent.db.models import Game
 from betting_agent.db.session import get_session
+from betting_agent.sports.registry import get_sport_config
 from betting_agent.sports.teams import same_team
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ DATE_TOLERANCE = pd.Timedelta(days=2)
 
 
 def _season_for(d: date) -> int:
-    return d.year if d.month >= 8 else d.year - 1
+    return get_sport_config("NFL").season_for_date(d)
 
 
 def finalize_nfl_games(target_date: date | None = None) -> int:
