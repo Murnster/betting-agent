@@ -124,6 +124,27 @@ class TestValidate:
             returncode=1, stdout="", stderr="boom"))
         assert ClaudeCliValidator(model="claude/sonnet").validate(_payload()) is None
 
+    def test_budget_killed_call_reports_its_spend(self, monkeypatch):
+        # --max-budget-usd kills the CLI mid-search: exit 1, but the JSON
+        # envelope still carries what was spent. That money must be booked.
+        _available(monkeypatch)
+        env = {"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
+               "stop_reason": "tool_use", "total_cost_usd": 0.4197, "result": ""}
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+            returncode=1, stdout=json.dumps(env), stderr=""))
+        v = ClaudeCliValidator(model="claude/sonnet")
+        assert v.validate(_payload()) is None
+        assert v.last_call_cost_usd == 0.4197
+
+    def test_successful_call_records_spend_too(self, monkeypatch):
+        _available(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=json.dumps(
+                {"structured_output": _result_body(), "total_cost_usd": 0.02}), stderr=""))
+        v = ClaudeCliValidator(model="claude/sonnet")
+        assert v.validate(_payload()) is not None
+        assert v.last_call_cost_usd == 0.02
+
     def test_timeout_is_none(self, monkeypatch):
         _available(monkeypatch)
 

@@ -2,7 +2,8 @@
 """
 NFL player prop picks (Phase 3 — PAPER TRADING).
 
-Fetches per-event prop odds (bet365 by default), projects each player's stat
+Fetches per-event prop odds (bet365, falling back to DraftKings/FanDuel — the
+Odds API has no bet365 prop feed), projects each player's stat
 distribution from nflreadpy weekly stats, and surfaces overs/unders where the
 model probability beats the de-vigged market probability by the edge
 threshold. Picks save as bet_type="prop" with recommended (paper) stakes —
@@ -39,6 +40,7 @@ from betting_agent.sports.nfl.props import (
     PROP_EDGE_FLOORS,
     ReceivingPropsModel,
     active_player_keys,
+    books_in_preference,
     approximate_nfl_week,
     book_proxy_line,
     build_receiving_history,
@@ -48,6 +50,7 @@ from betting_agent.sports.nfl.props import (
     nfl_week_for,
     normalize_player,
     pair_outcomes,
+    prop_bookmaker_order,
     schedule_row_for,
 )
 from betting_agent.sports.registry import get_sport_config
@@ -255,6 +258,7 @@ def generate_prop_candidates(
     schedule: pd.DataFrame | None = None,
     injuries: pd.DataFrame | None = None,
     qb1: dict | None = None,
+    book_order: list[str] | None = None,
 ) -> list[BetCandidate]:
     from betting_agent.intelligence.picks import (
         _apply_same_game_correlation_adjustment,
@@ -272,7 +276,11 @@ def generate_prop_candidates(
         event_date = _event_date(event)
         week = nfl_week_for(event_date, season, schedule, home_abbrev, away_abbrev)
 
-        for book in event.get("bookmakers", []):
+        books = books_in_preference(event, book_order)
+        if book_order and books and books[0].get("key") != book_order[0]:
+            logger.warning("%s posted no props for %s @ %s — priced against %s",
+                           book_order[0], away, home, books[0].get("key"))
+        for book in books:
             for market in book.get("markets", []):
                 key = market.get("key")
                 model = models.get(key)
@@ -379,14 +387,15 @@ def game_lines_from_schedule(
 
 def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
     print(f"\n{'player':<24} {'market':<22} {'side':<6} {'line':>6} {'odds':>6} "
-          f"{'model':>7} {'fair':>7} {'edge':>7} {'paper $':>8}  verdict")
+          f"{'model':>7} {'fair':>7} {'edge':>7} {'paper $':>8}  {'book':<11} verdict")
     for c in candidates:
         verdict = c.agent_verdict or ""
         if verdict and verdict != "SKIPPED" and shadow:
             verdict += " (SHADOW)"
         print(f"{c.player:<24} {c.market:<22} {c.pick_side:<6} {c.line:>6.1f} "
               f"{c.odds:>+6} {c.model_prob:>6.1%} {c.implied_prob:>6.1%} "
-              f"{c.edge:>+6.1%} {c.recommended_bet:>8.2f}  {verdict}")
+              f"{c.edge:>+6.1%} {c.recommended_bet:>8.2f}  "
+              f"{(c.extra.get('bookmaker') or ''):<11} {verdict}")
         for flag in c.extra.get("flags", []):
             print(f"{'':<24} ! {flag.get('detail', '')}")
         agent = c.extra.get("agent") or {}
@@ -397,7 +406,7 @@ def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
 def run_closing_capture(window_minutes: int) -> None:
     from betting_agent.accounting.prop_clv import capture_closing_lines_for_upcoming
 
-    books = settings.preferred_bookmaker_list or ["bet365"]
+    books = prop_bookmaker_order()
     n = capture_closing_lines_for_upcoming(window_minutes=window_minutes, bookmakers=books)
     if n:
         print(f"Stored closing lines for {n} prop picks.")
@@ -494,7 +503,7 @@ def main() -> None:
     if injuries.empty:
         logger.info("No injury report for %s week %d — injury checks skipped", season, week_hint)
 
-    books = settings.preferred_bookmaker_list or ["bet365"]
+    books = prop_bookmaker_order()
     chosen = None
     if upcoming is not None:
         ranked = rank_events_by_model_heat(upcoming, models, history, season, roster, schedule)
@@ -516,6 +525,7 @@ def main() -> None:
     candidates = generate_prop_candidates(
         events, models, bankroll, min_edge, season,
         current_teams=roster, schedule=schedule, injuries=injuries, qb1=qb1,
+        book_order=books,
     )
     candidates = candidates[:args.max_picks]
 

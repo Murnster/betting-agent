@@ -178,6 +178,12 @@ def validate_picks(
         if result is None:
             summary.skipped_games += 1
             _mark_group(group, "SKIPPED", ["validator request failed"])
+            # A call can fail after spending (the CLI's --max-budget-usd
+            # kills it mid-search); book that spend so the daily gate sees it.
+            wasted = float(getattr(validator, "last_call_cost_usd", 0.0) or 0.0)
+            if wasted > 0:
+                summary.total_cost_usd += wasted
+                summary.records.extend(_failed_call_records(group, wasted))
             continue
 
         summary.validated_games += 1
@@ -370,6 +376,24 @@ def _apply_result(
             pick.agent_reasons = ["validator returned no result for this pick"]
 
     return records
+
+
+def _failed_call_records(group: list[BetCandidate], cost_usd: float
+                         ) -> list[AgentValidationRecord]:
+    """SKIPPED records carrying the spend of a failed call, split per pick."""
+    per_pick = cost_usd / max(len(group), 1)
+    out = []
+    for pick in group:
+        pick.agent_cost_usd = per_pick
+        out.append(AgentValidationRecord(
+            game_id=pick.game_id or None, external_id=pick.external_id,
+            pick_date=pick.game_date, sport=pick.sport, bet_type=pick.bet_type,
+            pick_side=_record_side(pick), verdict="SKIPPED",
+            original_edge=pick.edge, adjusted_edge=pick.edge,
+            reasons=["validator request failed"], input_tokens=0, output_tokens=0,
+            cost_usd=per_pick,
+        ))
+    return out
 
 
 def _record_side(pick: BetCandidate) -> str:

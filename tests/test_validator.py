@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import date
 
 from betting_agent.intelligence.picks import BetCandidate
@@ -167,6 +169,40 @@ def test_validate_picks_reduces_and_drops(monkeypatch):
     assert validated[0].recommended_bet == 20.0
     assert summary.validated_games == 1
     assert len(summary.records) == 2
+
+
+def test_failed_call_spend_is_booked_against_the_budget(monkeypatch):
+    class _Validator:
+        last_call_cost_usd = 0.42   # killed by --max-budget-usd after spending
+
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            return None
+
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.TavilySearchClient",
+        lambda: _NoSearch(),
+    )
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.make_validator",
+        lambda: _Validator(),
+    )
+    monkeypatch.setattr(
+        "betting_agent.intelligence.validator.orchestrator.budget_allows",
+        lambda target_date, run_cost: True,
+    )
+
+    a, b = _candidate(1, 0.06), _candidate(1, 0.05)
+    b.bet_type = "total"
+    validated, summary = validate_picks([a, b], sport="NFL", mode="all")
+
+    assert summary.skipped_games == 1
+    assert summary.total_cost_usd == pytest.approx(0.42)
+    assert [r.verdict for r in summary.records] == ["SKIPPED", "SKIPPED"]
+    assert sum(r.cost_usd for r in summary.records) == pytest.approx(0.42)
+    assert all(c.agent_verdict == "SKIPPED" and c.edge in (0.06, 0.05) for c in validated)
 
 
 def test_validate_picks_fails_open_when_validator_errors(monkeypatch):

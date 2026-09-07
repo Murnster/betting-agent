@@ -19,7 +19,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from betting_agent.accounting.clv import calculate_clv
-from betting_agent.sports.nfl.props import normalize_player, pair_outcomes
+from betting_agent.sports.nfl.props import (
+    books_in_preference,
+    normalize_player,
+    pair_outcomes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +64,18 @@ def line_moved_for_pick(pick_side: str, pick_line: float, closing_line: float) -
 
 
 def _closing_quote(event: dict, player_key: str, market: str, side: str,
-                   pick_line: float) -> tuple[float, int] | None:
+                   pick_line: float, book_order: list[str] | None = None,
+                   ) -> tuple[float, int] | None:
     """
     (line, price) at close for this player/market/side, from the pair whose
     line is closest to the pick's (books list alternate lines). Never
-    matched on the line itself — it may have moved.
+    matched on the line itself — it may have moved. Reads the same book the
+    pick was priced against (first of `book_order` that posted), so CLV
+    compares like with like.
     """
     want = "Over" if side.lower().startswith("over") else "Under"
     best: tuple[float, float, int] | None = None   # (gap, line, price)
-    for book in event.get("bookmakers", []):
+    for book in books_in_preference(event, book_order):
         for mkt in book.get("markets", []):
             if mkt.get("key") != market:
                 continue
@@ -84,7 +91,8 @@ def _closing_quote(event: dict, player_key: str, market: str, side: str,
     return None if best is None else (best[1], best[2])
 
 
-def capture_prop_closing_lines(events: list[dict], picks: list) -> int:
+def capture_prop_closing_lines(events: list[dict], picks: list,
+                               book_order: list[str] | None = None) -> int:
     """
     Store closing_line / closing_odds (and clv when the line held) on each
     pick whose game appears in `events` (per-event odds responses). Picks are
@@ -100,7 +108,7 @@ def capture_prop_closing_lines(events: list[dict], picks: list) -> int:
             continue
         quote = _closing_quote(
             event, normalize_player(pick.player), pick.market or "", pick.pick_side or "",
-            float(pick.line),
+            float(pick.line), book_order,
         )
         if quote is None:
             logger.info("No closing quote for %s %s %s", pick.player, pick.market, pick.pick_side)
@@ -158,6 +166,6 @@ def capture_closing_lines_for_upcoming(
         logger.info("Capturing closing lines for %d picks across %d games (%d credits)",
                     len(picks), len(targets), len(targets) * len(markets))
         odds = fetch_prop_odds(sport_key, markets=markets, bookmakers=bookmakers, events=targets)
-        updated = capture_prop_closing_lines(odds, picks)
+        updated = capture_prop_closing_lines(odds, picks, bookmakers)
     logger.info("Stored closing lines for %d prop picks", updated)
     return updated

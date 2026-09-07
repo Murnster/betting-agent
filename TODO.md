@@ -322,6 +322,25 @@ applied):
   - [ ] After 4–6 weeks: compare `agent_validations.verdict` with
     `picks.result` (NO_BET/REDUCED picks that lost vs won). Only then
     consider `AGENT_SHADOW=false`.
+- [x] **bet365 is not in the Odds API prop feed (found 2026-09-07).** Two days
+  before the opener bet365 had no receiving props in any region while
+  DraftKings/FanDuel/BetOnline/BetRivers/Bovada and Pinnacle/Unibet did, so the
+  bet365-only fetch could never produce a pick. `PROP_FALLBACK_BOOKMAKERS`
+  (default `draftkings,fanduel`) is requested alongside the preferred book at
+  no extra credit cost; `books_in_preference()` prices each game against the
+  first book in the order that posted (one book per game, no best-of-N).
+  Card shows the book; `--closing` uses the same order. Live check the same
+  day: 6 paper picks on BUF @ HOU priced against DraftKings.
+- [ ] **Validator per-call cap vs. WebSearch cost.** The first live shadow run
+  (6 picks, Sonnet + WebSearch) cost $0.42 and was killed by
+  `AGENT_CLAUDE_MAX_CALL_USD=0.25` — every pick came back SKIPPED and, before
+  the fix, the spend was not booked against the daily budget. Options: (a)
+  keep search, raise the cap to ~0.60 and the daily budget to ~2.00 (≈ $1–2
+  per slate, $5–8/week — pushes the $15/month ceiling); (b) search off
+  (~$0.014/game, verdicts rest on the payload alone); (c) search on but
+  `AGENT_CLAUDE_MAX_TURNS=2` to bound searches. Decide after seeing a
+  week of verdict quality; until then the cap stays and a killed call is
+  simply recorded as SKIPPED with its cost.
 - [ ] **Cron for the props loop — deferred by the user ("we'll do this
   later"); run by hand until then.** Proposed schedule (machine is
   America/Halifax, ADT = ET+1):

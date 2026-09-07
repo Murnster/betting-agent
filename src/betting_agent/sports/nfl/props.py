@@ -288,6 +288,46 @@ def nfl_week_for(
     return approximate_nfl_week(event_date, season)
 
 
+def prop_bookmaker_order() -> list[str]:
+    """
+    Books to request and, in this order, to price against: the preferred
+    book(s) first (default bet365, the book actually bet at), then the
+    fallbacks. The Odds API does not carry bet365 player props (Sep 2026:
+    none in any region on the opener while DraftKings/FanDuel/Pinnacle all
+    posted), so fetching only the preferred book returns an empty response
+    and no pick is ever produced. Up to 10 books cost the same one credit
+    per market, so requesting them all is free; `books_in_preference`
+    then decides which book's prices a game is priced against.
+    """
+    from betting_agent.config import settings
+
+    order = list(settings.preferred_bookmaker_list) or ["bet365"]
+    for key in settings.prop_fallback_bookmaker_list:
+        if key not in order:
+            order.append(key)
+    return order
+
+
+def _book_has_markets(book: dict) -> bool:
+    return any(m.get("outcomes") for m in book.get("markets", []))
+
+
+def books_in_preference(event: dict, order: list[str] | None) -> list[dict]:
+    """
+    The bookmaker entries of one per-event odds response to price against:
+    only the first book in `order` that actually posted markets, so a game
+    is never priced best-of-N across books (that inflates edges — the
+    floors were set against a single book). Falls back to every book in
+    the response when none of the ordered keys posted.
+    """
+    books = [b for b in event.get("bookmakers", []) if _book_has_markets(b)]
+    for key in order or []:
+        chosen = [b for b in books if b.get("key") == key]
+        if chosen:
+            return chosen
+    return books
+
+
 def pair_outcomes(market: dict) -> dict[tuple[str, float], dict[str, dict]]:
     """Group a market's outcomes into {(player, line): {"Over": o, "Under": o}}."""
     pairs: dict[tuple[str, float], dict[str, dict]] = {}

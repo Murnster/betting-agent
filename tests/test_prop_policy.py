@@ -12,7 +12,12 @@ import pytest
 
 import scripts.props as props_script
 from betting_agent.intelligence.picks import BetCandidate
-from betting_agent.sports.nfl.props import MIN_QUOTABLE_LINE, book_proxy_line
+from betting_agent.sports.nfl.props import (
+    MIN_QUOTABLE_LINE,
+    book_proxy_line,
+    books_in_preference,
+    prop_bookmaker_order,
+)
 
 
 class TestBookProxyLine:
@@ -145,6 +150,37 @@ class TestGeneratePropCandidates:
             [self._event()], models, bankroll=1000.0,
             min_edge=min_edge, season=2026, **kwargs,
         )
+
+
+    def test_preferred_book_absent_prices_against_first_fallback_only(self):
+        # bet365 is not in the Odds API prop feed. When it posts nothing the
+        # game is priced against the first fallback that did — never
+        # best-of-N across every book in the response.
+        model = self._Model(0.72)
+        event = self._event()
+        dk = {"key": "draftkings", "markets": event["bookmakers"][0]["markets"]}
+        fd_outcomes = [dict(o, price=+150) for o in dk["markets"][0]["outcomes"]]
+        fd = {"key": "fanduel", "markets": [{"key": "player_receptions", "outcomes": fd_outcomes}]}
+        event["bookmakers"] = [fd, dk]   # response order must not matter
+        cands = props_script.generate_prop_candidates(
+            [event], {"player_receptions": model}, bankroll=1000.0, min_edge=None,
+            season=2026, book_order=["bet365", "draftkings", "fanduel"],
+        )
+        assert cands and {c.extra["bookmaker"] for c in cands} == {"draftkings"}
+        assert all(c.odds == -110 for c in cands)   # FanDuel's +150 never considered
+
+    def test_preferred_book_present_is_used_even_when_fallback_is_juicier(self):
+        model = self._Model(0.72)
+        event = self._event()
+        b365 = event["bookmakers"][0]
+        dk_outcomes = [dict(o, price=+150) for o in b365["markets"][0]["outcomes"]]
+        event["bookmakers"] = [b365, {"key": "draftkings", "markets": [
+            {"key": "player_receptions", "outcomes": dk_outcomes}]}]
+        cands = props_script.generate_prop_candidates(
+            [event], {"player_receptions": model}, bankroll=1000.0, min_edge=None,
+            season=2026, book_order=["bet365", "draftkings"],
+        )
+        assert cands and {c.extra["bookmaker"] for c in cands} == {"bet365"}
 
     def test_roster_overlay_resolves_opponent_for_a_mover(self):
         # History says Star Guy plays for KC; the 2026 roster says he moved
@@ -624,3 +660,35 @@ class TestScheduleHelpers:
         assert props_script.game_lines_from_schedule(events, sched) == {
             "e1": (-3.5, 47.5), "e3": (None, 50.0),
         }
+
+
+class TestBookPreference:
+    def _event(self, *keys, empty=()):
+        def book(key):
+            markets = [] if key in empty else [{"key": "player_receptions", "outcomes": [
+                {"name": "Over", "description": "X", "point": 4.5, "price": -110}]}]
+            return {"key": key, "markets": markets}
+        return {"id": "e", "bookmakers": [book(k) for k in keys]}
+
+    def test_first_ordered_book_that_posted_wins(self):
+        ev = self._event("fanduel", "draftkings")
+        assert [b["key"] for b in books_in_preference(ev, ["bet365", "draftkings", "fanduel"])] \
+            == ["draftkings"]
+
+    def test_book_with_empty_markets_does_not_count_as_posted(self):
+        ev = self._event("bet365", "draftkings", empty=("bet365",))
+        assert [b["key"] for b in books_in_preference(ev, ["bet365", "draftkings"])] \
+            == ["draftkings"]
+
+    def test_no_ordered_book_posted_falls_back_to_everything(self):
+        ev = self._event("bovada", "betrivers")
+        assert [b["key"] for b in books_in_preference(ev, ["bet365"])] == ["bovada", "betrivers"]
+        assert [b["key"] for b in books_in_preference(ev, None)] == ["bovada", "betrivers"]
+
+    def test_default_order_is_preferred_then_fallbacks(self, monkeypatch):
+        from betting_agent.config import settings
+        monkeypatch.setattr(settings, "preferred_bookmakers", "")
+        monkeypatch.setattr(settings, "prop_fallback_bookmakers", "draftkings,fanduel")
+        assert prop_bookmaker_order() == ["bet365", "draftkings", "fanduel"]
+        monkeypatch.setattr(settings, "preferred_bookmakers", "fanduel")
+        assert prop_bookmaker_order() == ["fanduel", "draftkings"]

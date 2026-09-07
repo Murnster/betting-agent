@@ -60,6 +60,18 @@ class TestCaptureProbClosingLines:
         capture_prop_closing_lines([event], [pick])
         assert (pick.closing_line, pick.closing_odds) == (4.5, -125)
 
+    def test_closing_quote_reads_the_same_book_as_the_pick(self):
+        pick = _pick(line=4.5, odds=-110)
+        event = _event([("Over", "Travis Kelce", 4.5, -105), ("Under", "Travis Kelce", 4.5, -125)])
+        event["bookmakers"][0]["key"] = "fanduel"
+        event["bookmakers"].append({"key": "draftkings", "markets": [
+            {"key": "player_receptions", "outcomes": [
+                {"name": "Over", "description": "Travis Kelce", "point": 4.5, "price": -120},
+                {"name": "Under", "description": "Travis Kelce", "point": 4.5, "price": -100},
+            ]}]})
+        capture_prop_closing_lines([event], [pick], book_order=["bet365", "draftkings", "fanduel"])
+        assert pick.closing_odds == -100          # DraftKings, not FanDuel's -125
+
     def test_player_matched_across_spellings(self):
         pick = _pick(player="Amon-Ra St. Brown")
         event = _event([("Over", "Amon Ra St Brown", 4.5, -110),

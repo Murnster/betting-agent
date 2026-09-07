@@ -41,6 +41,14 @@ class Settings(BaseSettings):
             "(e.g. 'bet365'). Empty means shop every book in the response."
         ),
     )
+    prop_fallback_bookmakers: str = Field(
+        default="draftkings,fanduel",
+        description=(
+            "Ordered Odds API bookmaker keys to price NFL props against when the "
+            "preferred book posts none. bet365 is not in the API's player-prop "
+            "feed, so without a fallback the props loop never produces a pick."
+        ),
+    )
 
     # OpenWeatherMap
     weather_api_key: str = Field(default="", description="OpenWeatherMap API key")
@@ -156,6 +164,11 @@ class Settings(BaseSettings):
     def preferred_bookmaker_list(self) -> list[str]:
         """preferred_bookmakers parsed into keys ([] when unset)."""
         return [b.strip() for b in self.preferred_bookmakers.split(",") if b.strip()]
+
+    @property
+    def prop_fallback_bookmaker_list(self) -> list[str]:
+        """prop_fallback_bookmakers parsed into keys ([] when unset)."""
+        return [b.strip() for b in self.prop_fallback_bookmakers.split(",") if b.strip()]
 
 
 # Module-level singleton — import `settings` everywhere

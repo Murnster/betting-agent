@@ -63,6 +63,10 @@ class ClaudeCliValidator:
         self.binary = binary
         self._path: str | None = None
         self._checked = False
+        # Spend of the most recent validate() call, including calls that
+        # failed (e.g. killed by --max-budget-usd mid-search): the money is
+        # gone either way and must count against the daily budget.
+        self.last_call_cost_usd: float = 0.0
 
     def is_available(self) -> bool:
         if not self._checked:
@@ -92,6 +96,7 @@ class ClaudeCliValidator:
         return cmd
 
     def validate(self, payload: ValidatorInput) -> GameValidationResult | None:
+        self.last_call_cost_usd = 0.0
         if not self.is_available():
             return None
         has_props = any(p.bet_type == "prop" for p in payload.picks)
@@ -107,12 +112,34 @@ class ClaudeCliValidator:
             logger.warning("claude validator failed to run for %s: %s", payload.game_id, exc)
             return None
         if proc.returncode != 0:
-            logger.warning(
-                "claude validator exited %d for %s: %s",
-                proc.returncode, payload.game_id, (proc.stderr or proc.stdout)[:200].strip(),
-            )
+            envelope = _try_envelope(proc.stdout)
+            if envelope is not None:
+                self.last_call_cost_usd = float(envelope.get("total_cost_usd") or 0.0)
+                logger.warning(
+                    "claude validator exited %d for %s (%s, $%.3f spent): %s",
+                    proc.returncode, payload.game_id, envelope.get("subtype") or "error",
+                    self.last_call_cost_usd, str(envelope.get("result") or "")[:200].strip(),
+                )
+            else:
+                logger.warning(
+                    "claude validator exited %d for %s: %s",
+                    proc.returncode, payload.game_id, (proc.stderr or proc.stdout)[:200].strip(),
+                )
             return None
-        return parse_cli_envelope(proc.stdout, payload.game_id)
+        result = parse_cli_envelope(proc.stdout, payload.game_id)
+        envelope = _try_envelope(proc.stdout)
+        if envelope is not None:
+            self.last_call_cost_usd = float(envelope.get("total_cost_usd") or 0.0)
+        return result
+
+
+def _try_envelope(stdout: str) -> dict | None:
+    """The `--output-format json` envelope if stdout is one, else None."""
+    try:
+        env = json.loads(stdout)
+    except ValueError:
+        return None
+    return env if isinstance(env, dict) else None
 
 
 def parse_cli_envelope(stdout: str, game_id: str) -> GameValidationResult | None:
