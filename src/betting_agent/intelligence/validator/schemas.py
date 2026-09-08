@@ -36,6 +36,7 @@ class CandidateValidationInput(BaseModel):
     recommended_bet: float
     # Props only
     player: str | None = None
+    team: str | None = None     # the player's CURRENT club (official roster + the book's board)
     market: str | None = None
     line: float | None = None
     projection_mean: float | None = None

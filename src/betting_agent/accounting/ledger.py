@@ -10,6 +10,7 @@ placed rather than the recommendation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -17,6 +18,31 @@ from typing import Any
 from betting_agent.config import settings
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.session import get_session
+
+#: Pick.strategy of the ladder-hits section — a separate paper book with its
+#: own bankroll (settings.ladder_bankroll). NULL strategy = the default book.
+LADDER_STRATEGY = "ladder"
+#: Pick.strategy of the straight-overs section (main-line Overs, own bankroll).
+OVERS_STRATEGY = "overs"
+#: Every side book; the main prop summaries exclude all of them.
+SIDE_BOOKS: tuple[str, ...] = (LADDER_STRATEGY, OVERS_STRATEGY)
+
+
+def starting_bankroll_for(strategy: str | None) -> float:
+    if strategy == LADDER_STRATEGY:
+        return settings.ladder_bankroll
+    if strategy == OVERS_STRATEGY:
+        return settings.overs_bankroll
+    return settings.starting_bankroll
+
+
+def strategy_exclusion(column, exclude: str | Sequence[str] | None):
+    """SQLAlchemy clause keeping NULL-strategy rows and dropping `exclude`
+    (one strategy or several); None when nothing is excluded."""
+    if not exclude:
+        return None
+    names = [exclude] if isinstance(exclude, str) else list(exclude)
+    return (column.is_(None)) | (column.notin_(names))
 
 
 @dataclass
@@ -37,14 +63,19 @@ class LedgerEntry:
 def equity_curve(
     sport: str | None = None,
     starting_bankroll: float | None = None,
+    strategy: str | None = None,
+    exclude_strategy: str | Sequence[str] | None = None,
 ) -> list[LedgerEntry]:
     """
     Every graded pick in settlement order with running equity.
     Settlement order is game date, then graded_at, then pick id — stable and
     reproducible even when several picks grade in one run.
+
+    `strategy` restricts the curve to one paper book (the ladder section
+    starts from settings.ladder_bankroll); `exclude_strategy` drops it.
     """
     if starting_bankroll is None:
-        starting_bankroll = settings.starting_bankroll
+        starting_bankroll = starting_bankroll_for(strategy)
 
     with get_session() as session:
         q = (
@@ -54,6 +85,11 @@ def equity_curve(
         )
         if sport:
             q = q.filter(Pick.sport == sport)
+        if strategy:
+            q = q.filter(Pick.strategy == strategy)
+        clause = strategy_exclusion(Pick.strategy, exclude_strategy)
+        if clause is not None:
+            q = q.filter(clause)
         rows = q.all()
         entries_raw = [
             {
@@ -96,16 +132,18 @@ def equity_curve(
     return entries
 
 
-def current_bankroll(sport: str | None = None) -> float:
+def current_bankroll(sport: str | None = None, strategy: str | None = None,
+                     exclude_strategy: str | Sequence[str] | None = None) -> float:
     """Starting bankroll plus all graded P&L."""
-    curve = equity_curve(sport=sport)
-    return curve[-1].equity if curve else settings.starting_bankroll
+    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy)
+    return curve[-1].equity if curve else starting_bankroll_for(strategy)
 
 
-def ledger_summary(sport: str | None = None) -> dict[str, Any]:
+def ledger_summary(sport: str | None = None, strategy: str | None = None,
+                   exclude_strategy: str | Sequence[str] | None = None) -> dict[str, Any]:
     """Headline equity numbers for reports."""
-    curve = equity_curve(sport=sport)
-    start = settings.starting_bankroll
+    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy)
+    start = starting_bankroll_for(strategy)
     if not curve:
         return {
             "starting_bankroll": start,

@@ -25,6 +25,11 @@ from betting_agent.intelligence.picks import (
     _market_label,
     _pick_label,
 )
+from betting_agent.sports.nfl.props import ladder_label, over_label
+from betting_agent.sports.nfl.td_props import TD_MARKET
+
+LADDER_STRATEGY = "ladder"
+OVERS_STRATEGY = "overs"
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,7 @@ COLOR_BLUE = 0x3498DB    # summary headers
 COLOR_GREEN = 0x2ECC71   # positive P&L / picks
 COLOR_RED = 0xE74C3C     # negative P&L
 COLOR_GREY = 0x95A5A6    # no data
+COLOR_ORANGE = 0xE67E22  # straight-overs section
 
 # Discord allows max 10 embeds per message
 MAX_EMBEDS_PER_MESSAGE = 10
@@ -222,16 +228,24 @@ def _build_lean_embed(pick: BetCandidate, rank: int) -> dict:
 def send_slate_to_discord(
     title: str, leans: list[BetCandidate], props: list[BetCandidate], bankroll: float,
     sport: str = "NFL", agent_summary: dict | None = None, extra_saved: int = 0,
+    td_scorers: list[BetCandidate] | None = None,
+    ladder: list[BetCandidate] | None = None, ladder_saved: int = 0,
+    ladder_bankroll: float | None = None,
+    overs: list[BetCandidate] | None = None, overs_saved: int = 0,
+    overs_bankroll: float | None = None,
 ) -> bool:
     """
-    One card per slate: header, the game lean(s), then the prop picks.
-    `extra_saved` = props that cleared the floors but did not make the card.
+    One card per slate: header, the game lean(s), the anytime-TD scorer(s),
+    the prop picks, then the straight-overs sub-section and the ladder-hits
+    sub-section (each its own paper book). `extra_saved` / `overs_saved` /
+    `ladder_saved` = picks that cleared the floors but did not make the card.
+    `td_scorers` are labelled PICK or LEAN by edge.
     """
     url = _get_webhook_url(sport, "PICKS")
     if not url:
         logger.debug("Discord not configured for %s picks, skipping", sport)
         return False
-    if not leans and not props:
+    if not leans and not props and not td_scorers and not ladder and not overs:
         return True
 
     from betting_agent.sports.registry import get_sport_config
@@ -246,15 +260,165 @@ def send_slate_to_discord(
     embeds = [header]
     for rank, lean in enumerate(sorted(leans, key=lambda c: c.edge, reverse=True), 1):
         embeds.append(_build_lean_embed(lean, rank))
+    for rank, td in enumerate(sorted(td_scorers or [], key=lambda c: c.edge, reverse=True), 1):
+        embeds.append(_build_td_embed(td, rank))
     for rank, pick in enumerate(sorted(props, key=lambda c: c.edge, reverse=True), 1):
         embeds.append(_build_pick_embed(pick, rank, star_thresholds,
                                         analysis=(pick.extra or {}).get("analysis")))
+    if overs:
+        embeds.append(_build_overs_header_embed(overs, overs_bankroll, overs_saved))
+        for rank, pick in enumerate(sorted(overs, key=lambda c: c.edge, reverse=True), 1):
+            embeds.append(_build_over_embed(pick, rank))
+    if ladder:
+        embeds.append(_build_ladder_header_embed(ladder, ladder_bankroll, ladder_saved))
+        for rank, pick in enumerate(sorted(ladder, key=lambda c: c.edge, reverse=True), 1):
+            embeds.append(_build_ladder_embed(pick, rank))
 
     all_ok = True
     for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
         if not _send_webhook(url, {"embeds": embeds[i: i + MAX_EMBEDS_PER_MESSAGE]}):
             all_ok = False
     return all_ok
+
+
+def _build_td_embed(pick: BetCandidate, rank: int) -> dict:
+    """
+    The slate's anytime-TD scorer: the best edge on the book's Yes board once
+    it is de-vigged to the market's expected TDs. A PICK (paper stake) when
+    the edge sits inside the window, otherwise a LEAN at stake 0 — shown
+    either way, like the game lean, and tracked for hit rate vs fair.
+    """
+    extra = pick.extra or {}
+    is_pick = bool(extra.get("td_pick"))
+    matchup = f"{pick.away_team} @ {pick.home_team}"
+    book = extra.get("bookmaker", "")
+    hold = extra.get("board_hold")
+    desc = (
+        f"{matchup}\n\n"
+        f"**Odds:** `{pick.odds:+d}` at {book}  |  **Edge:** `{pick.edge:+.1%}`\n"
+        f"**Model:** `{pick.model_prob:.1%}` to score  vs  **Fair:** `{pick.implied_prob:.1%}`"
+        + (f" (board hold {hold:.0%})" if hold is not None else "") + "\n"
+    )
+    if is_pick:
+        desc += (f"**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}` "
+                 "_(paper — anytime TD is in shadow)_")
+    else:
+        desc += "_Lean, not a pick: edge below the TD floor. Stake 0, tracked for hit rate and CLV._"
+    for flag in extra.get("flags", []):
+        desc += f"\n\u26a0 {flag.get('detail', '')}"
+    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+        shadow = bool(extra.get("agent", {}).get("shadow"))
+        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
+    if pick.agent_reasons:
+        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    tag = "PICK" if is_pick else "LEAN"
+    return {"title": f"TD SCORER #{rank}  {pick.player} anytime TD ({tag})",
+            "description": desc[:4000], "color": COLOR_GREEN if is_pick else COLOR_GREY}
+
+
+def _build_ladder_header_embed(ladder: list[BetCandidate], bankroll: float | None,
+                               saved_off_card: int) -> dict:
+    """Sub-section divider for the ladder hits: its own paper book."""
+    total = sum(c.recommended_bet for c in ladder)
+    desc = ("Best overs — the player reaching a milestone, priced on the alternate boards. "
+            "Experimental pick pool: every entry is staked from its own paper bankroll, "
+            "never mixed with the picks above.")
+    if bankroll is not None:
+        desc += f"\n**Ladder bankroll:** `${bankroll:,.2f}`  |  **Action:** `${total:,.2f}`"
+    if saved_off_card:
+        desc += f"\n_{saved_off_card} more ladder pick(s) saved off-card._"
+    return {"title": f"LADDER HITS \u2014 {len(ladder)} on card", "description": desc,
+            "color": COLOR_BLUE}
+
+
+def _build_ladder_embed(pick: BetCandidate, rank: int) -> dict:
+    """One ladder rung: 'A.J. Brown 60+ receiving yds' with its own stake."""
+    extra = pick.extra or {}
+    matchup = f"{pick.away_team} @ {pick.home_team}"
+    book = extra.get("bookmaker", "")
+    desc = (
+        f"{matchup}\n\n"
+        f"**Odds:** `{pick.odds:+d}` at {book}  |  **Edge:** `{pick.edge:+.1%}`\n"
+        f"**Model:** `{pick.model_prob:.1%}` to hit  vs  **Fair:** `{pick.implied_prob:.1%}`"
+    )
+    mean = extra.get("projection_mean")
+    if mean is not None:
+        desc += f"  |  **Proj:** `{mean:g}`"
+    desc += (f"\n**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}` "
+             "_(paper — ladder bankroll)_")
+    for flag in extra.get("flags", []):
+        desc += f"\n\u26a0 {flag.get('detail', '')}"
+    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+        shadow = bool(extra.get("agent", {}).get("shadow"))
+        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
+    if pick.agent_reasons:
+        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    return {"title": f"LADDER #{rank}  {ladder_label(pick.player, pick.market, pick.line)}",
+            "description": desc[:4000], "color": COLOR_BLUE}
+
+
+def _build_overs_header_embed(overs: list[BetCandidate], bankroll: float | None,
+                              saved_off_card: int) -> dict:
+    """Sub-section divider for the straight overs: its own paper book."""
+    total = sum(c.recommended_bet for c in overs)
+    n_flat = sum(1 for c in overs if (c.extra or {}).get("flat_stake"))
+    desc = ("Straight overs — the book's main-line Over, priced by the ladder projection. "
+            "Experimental pick pool: the game's best over is always here, staked from its "
+            "own paper bankroll, never mixed with the picks above.")
+    if n_flat:
+        desc += (f"\n{n_flat} at a flat 1% stake: the model has no edge on any over in that "
+                 "game, the selection is tracked anyway.")
+    if bankroll is not None:
+        desc += f"\n**Overs bankroll:** `${bankroll:,.2f}`  |  **Action:** `${total:,.2f}`"
+    if saved_off_card:
+        desc += f"\n_{saved_off_card} more over(s) saved off-card._"
+    return {"title": f"STRAIGHT OVERS \u2014 {len(overs)} on card", "description": desc,
+            "color": COLOR_ORANGE}
+
+
+def _build_over_embed(pick: BetCandidate, rank: int) -> dict:
+    """One straight over: 'Romeo Doubs over 36.5 receiving yds' with its own stake."""
+    extra = pick.extra or {}
+    matchup = f"{pick.away_team} @ {pick.home_team}"
+    book = extra.get("bookmaker", "")
+    desc = (
+        f"{matchup}\n\n"
+        f"**Odds:** `{pick.odds:+d}` at {book}  |  **Edge:** `{pick.edge:+.1%}`\n"
+        f"**Model:** `{pick.model_prob:.1%}` over  vs  **Fair:** `{pick.implied_prob:.1%}`"
+    )
+    mean = extra.get("projection_mean")
+    if mean is not None:
+        desc += f"  |  **Proj:** `{mean:g}`"
+    desc += (f"\n**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}` "
+             "_(paper — overs bankroll)_")
+    if extra.get("flat_stake"):
+        desc += "\n_Best over in the game by edge, but the model has none: flat 1% stake, tracked._"
+    for flag in extra.get("flags", []):
+        desc += f"\n\u26a0 {flag.get('detail', '')}"
+    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+        shadow = bool(extra.get("agent", {}).get("shadow"))
+        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
+    if pick.agent_reasons:
+        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    return {"title": f"OVER #{rank}  {over_label(pick.player, pick.market, pick.line)}",
+            "description": desc[:4000], "color": COLOR_ORANGE}
+
+
+def _ladder_line(summary: dict[str, Any] | None, bankroll: float | None = None,
+                 label: str = "Ladder hits") -> str | None:
+    """One line for the ladder book: record, P&L, ROI and (all-time) its bankroll."""
+    if not summary or "total_bets" not in summary:
+        return None
+    pnl = summary.get("total_pnl", 0.0)
+    text = (f"**{label} (own bankroll):** {summary.get('wins', 0)}-{summary.get('losses', 0)}"
+            f"-{summary.get('pushes', 0)}  |  **P&L:** {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}"
+            f"  |  **ROI:** {summary.get('roi_pct', 0):+.2f}%")
+    if summary.get("avg_fair_pct") is not None:
+        text += (f"  |  **Hit:** {summary.get('win_rate_pct', 0):.1f}% vs fair "
+                 f"{summary['avg_fair_pct']:.1f}%")
+    if bankroll is not None:
+        text += f"  |  **Bankroll:** ${bankroll:,.2f} \u2192 ${bankroll + pnl:,.2f}"
+    return text
 
 
 LEAN_BET_TYPES = ("moneyline", "spread", "total")
@@ -275,19 +439,39 @@ def _lean_line(lean_summary: dict[str, Any] | None, label: str = "Leans") -> str
     return text
 
 
+def _td_line(td_summary: dict[str, Any] | None, label: str = "TD scorers") -> str | None:
+    """Anytime-TD scorers: record and hit rate against the FAIR probability
+    (a 30% hit rate on +250 shots is a win; never compare with 50%)."""
+    if not td_summary or "total_bets" not in td_summary:
+        return None
+    text = (f"**{label} (paper):** {td_summary.get('wins', 0)}-{td_summary.get('losses', 0)}"
+            f"-{td_summary.get('pushes', 0)}")
+    if td_summary.get("avg_fair_pct") is not None:
+        text += (f"  |  **Hit:** {td_summary.get('win_rate_pct', 0):.1f}% vs fair "
+                 f"{td_summary['avg_fair_pct']:.1f}%")
+    if td_summary.get("avg_clv_pct") is not None:
+        text += f"  |  **CLV:** {td_summary['avg_clv_pct']:+.2f}% on {td_summary.get('clv_sample', 0)}"
+    return text
+
+
 def _build_results_embed(
     summary: dict[str, Any],
     sport: str,
     graded_date: date | None = None,
     pick_details: list[dict] | None = None,
     lean_summary: dict[str, Any] | None = None,
+    td_summary: dict[str, Any] | None = None,
+    ladder_summary: dict[str, Any] | None = None,
+    overs_summary: dict[str, Any] | None = None,
 ) -> dict:
     """Build a Discord embed for grading results."""
     if "message" in summary:
-        lean = _lean_line(lean_summary)
+        extra_lines = [ln for ln in (_lean_line(lean_summary), _td_line(td_summary),
+                                     _ladder_line(overs_summary, label="Straight overs"),
+                                     _ladder_line(ladder_summary)) if ln]
         return {
             "title": f"Results \u2014 {sport}",
-            "description": summary["message"] + (f"\n{lean}" if lean else ""),
+            "description": "\n".join([summary["message"], *extra_lines]),
             "color": COLOR_GREY,
         }
 
@@ -317,6 +501,15 @@ def _build_results_embed(
     lean = _lean_line(lean_summary)
     if lean:
         lines.append(lean)
+    td = _td_line(td_summary)
+    if td:
+        lines.append(td)
+    overs = _ladder_line(overs_summary, label="Straight overs")
+    if overs:
+        lines.append(overs)
+    ladder = _ladder_line(ladder_summary)
+    if ladder:
+        lines.append(ladder)
 
     if pick_details:
         lines.append("")
@@ -327,7 +520,13 @@ def _build_results_embed(
             pnl_str = f"+${pnl_val:,.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):,.2f}"
             matchup = f"{d['away_team']} @ {d['home_team']}"
             odds_str = f"{d['odds']:+d}" if d["odds"] else ""
-            if d.get("bet_type") == "prop" and d.get("player"):
+            if d.get("bet_type") == "prop" and d.get("market") == TD_MARKET:
+                bet_desc = f"TD {d['player']} anytime TD"
+            elif d.get("bet_type") == "prop" and d.get("strategy") == LADDER_STRATEGY:
+                bet_desc = f"LADDER {ladder_label(d.get('player'), d.get('market'), d.get('line'))}"
+            elif d.get("bet_type") == "prop" and d.get("strategy") == OVERS_STRATEGY:
+                bet_desc = f"OVER {over_label(d.get('player'), d.get('market'), d.get('line'))}"
+            elif d.get("bet_type") == "prop" and d.get("player"):
                 market = _market_label(d.get("market"))
                 line_val = d.get("line")
                 line_str = f" {line_val:g}" if line_val is not None else ""
@@ -380,6 +579,14 @@ def send_results_to_discord(
     alltime_summary: dict[str, Any] | None = None,
     alltime_lean_summary: dict[str, Any] | None = None,
     starting_bankroll: float | None = None,
+    td_summary: dict[str, Any] | None = None,
+    alltime_td_summary: dict[str, Any] | None = None,
+    ladder_summary: dict[str, Any] | None = None,
+    alltime_ladder_summary: dict[str, Any] | None = None,
+    ladder_bankroll: float | None = None,
+    overs_summary: dict[str, Any] | None = None,
+    alltime_overs_summary: dict[str, Any] | None = None,
+    overs_bankroll: float | None = None,
 ) -> bool:
     """
     Send grading results to the Discord results channel for the given sport.
@@ -400,7 +607,8 @@ def send_results_to_discord(
         return True
 
     embeds = [_build_results_embed(summary, sport, graded_date, pick_details=pick_details,
-                                   lean_summary=lean_summary)]
+                                   lean_summary=lean_summary, td_summary=td_summary,
+                                   ladder_summary=ladder_summary, overs_summary=overs_summary)]
     if breakdown:
         embeds.append(_build_breakdown_embed(breakdown, sport))
     if alltime_summary is not None and starting_bankroll is not None:
@@ -408,6 +616,17 @@ def send_results_to_discord(
         lean = _lean_line(alltime_lean_summary, label="Leans all-time")
         if lean:
             recap["description"] += f"\n{lean}"
+        td = _td_line(alltime_td_summary, label="TD scorers all-time")
+        if td:
+            recap["description"] += f"\n{td}"
+        overs = _ladder_line(alltime_overs_summary, bankroll=overs_bankroll,
+                             label="Straight overs all-time")
+        if overs:
+            recap["description"] += f"\n{overs}"
+        ladder = _ladder_line(alltime_ladder_summary, bankroll=ladder_bankroll,
+                              label="Ladder hits all-time")
+        if ladder:
+            recap["description"] += f"\n{ladder}"
         embeds.append(recap)
 
     payload: dict[str, Any] = {"embeds": embeds}

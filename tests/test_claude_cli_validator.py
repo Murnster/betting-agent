@@ -20,8 +20,9 @@ def _payload() -> ValidatorInput:
         picks=[CandidateValidationInput(
             bet_type="prop", pick_side="under", model_prob=0.66, implied_prob=0.5,
             edge=0.16, odds=-110, kelly_fraction=0.03, recommended_bet=3.0,
-            player="Travis Kelce", market="player_receptions", line=4.5,
-            projection_mean=3.4, projection_games=20, recent_values=[3, 4, 2, 5, 3, 3, 4, 2],
+            player="Travis Kelce", team="Kansas City Chiefs", market="player_receptions",
+            line=4.5, projection_mean=3.4, projection_games=20,
+            recent_values=[3, 4, 2, 5, 3, 3, 4, 2],
         )],
     )
 

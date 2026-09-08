@@ -107,6 +107,8 @@ def main() -> None:
                 send_alltime_to_discord,
                 send_results_to_discord,
             )
+            from betting_agent.accounting.ledger import LADDER_STRATEGY, OVERS_STRATEGY, SIDE_BOOKS
+            from betting_agent.sports.nfl.td_props import TD_MARKET
             from betting_agent.sports.registry import available_sports
 
             graded_date = target_date or date.today()
@@ -124,26 +126,47 @@ def main() -> None:
                 if "total_bets" not in summary:
                     continue  # nothing settled for this sport in this run
                 sports_with_results.append(sport_name)
-                lean_summary = None
+                lean_summary = td_summary = ladder_summary = overs_summary = None
                 if sport_name == "NFL":
-                    # Props are the picks; game markets are paper leans.
-                    prop_summary = get_summary(sport=sport_name, bet_type="prop", **window)
+                    # Receiving props are the picks; game markets are paper
+                    # leans; anytime-TD scorers, the ladder hits and the
+                    # straight overs (own bankrolls) get their own lines.
+                    main = {"exclude_market": TD_MARKET, "exclude_strategy": SIDE_BOOKS}
+                    prop_summary = get_summary(sport=sport_name, bet_type="prop", **main, **window)
                     lean_summary = get_summary(sport=sport_name, bet_type=list(LEAN_BET_TYPES), **window)
+                    td_summary = get_summary(sport=sport_name, bet_type="prop", market=TD_MARKET, **window)
+                    ladder_summary = get_summary(sport=sport_name, bet_type="prop",
+                                                 strategy=LADDER_STRATEGY, **window)
+                    overs_summary = get_summary(sport=sport_name, bet_type="prop",
+                                                strategy=OVERS_STRATEGY, **window)
                     summary = prop_summary if "total_bets" in prop_summary else summary
                 breakdown = get_breakdown_by_bet_type(sport=sport_name, **window)
                 pick_details = get_graded_picks_detail(sport=sport_name, **window)
                 kwargs = {}
                 if sport_name in inline_alltime:
                     kwargs = {
-                        "alltime_summary": get_summary(sport=sport_name, bet_type="prop", until=until_date)
+                        "alltime_summary": get_summary(sport=sport_name, bet_type="prop", **main,
+                                                       until=until_date)
                         if sport_name == "NFL" else get_summary(sport=sport_name, until=until_date),
                         "alltime_lean_summary": get_summary(sport=sport_name, bet_type=list(LEAN_BET_TYPES),
                                                             until=until_date) if sport_name == "NFL" else None,
+                        "alltime_td_summary": get_summary(sport=sport_name, bet_type="prop", market=TD_MARKET,
+                                                          until=until_date) if sport_name == "NFL" else None,
+                        "alltime_ladder_summary": get_summary(sport=sport_name, bet_type="prop",
+                                                              strategy=LADDER_STRATEGY, until=until_date)
+                        if sport_name == "NFL" else None,
+                        "alltime_overs_summary": get_summary(sport=sport_name, bet_type="prop",
+                                                             strategy=OVERS_STRATEGY, until=until_date)
+                        if sport_name == "NFL" else None,
                         "starting_bankroll": settings.starting_bankroll,
+                        "ladder_bankroll": settings.ladder_bankroll,
+                        "overs_bankroll": settings.overs_bankroll,
                     }
                 logger.info("Sending results to Discord (%s)...", sport_name)
                 send_results_to_discord(summary, sport_name, breakdown, graded_date,
-                                        pick_details=pick_details, lean_summary=lean_summary, **kwargs)
+                                        pick_details=pick_details, lean_summary=lean_summary,
+                                        td_summary=td_summary, ladder_summary=ladder_summary,
+                                        overs_summary=overs_summary, **kwargs)
 
             # Shared all-time channel: everything except the inline sports.
             shared = [s for s in sports_with_results if s not in inline_alltime]

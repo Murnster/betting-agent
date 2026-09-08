@@ -49,6 +49,31 @@ class Settings(BaseSettings):
             "feed, so without a fallback the props loop never produces a pick."
         ),
     )
+    # Anytime-touchdown scorers (sports/nfl/td_props.py). Fetched for one
+    # extra credit per game; the best scorer per game sits on the card like
+    # the game lean (PICK inside the edge window, else LEAN at stake 0).
+    td_props_enabled: bool = Field(default=True)
+    td_props_per_game: int = Field(default=2)
+    # Ladder hits — the "best overs" section: the player reaching a milestone
+    # (60+ receiving yds, 6+ receptions, 40+ rushing) priced on the books'
+    # alternate boards. One extra credit per game per market. Tracked as its
+    # own paper book (Pick.strategy = "ladder") against its own bankroll.
+    ladder_enabled: bool = Field(default=True)
+    ladder_bankroll: float = Field(default=100.0, description="Ladder section's paper bankroll")
+    # Straight overs — the book's main-line Over on the receiving markets,
+    # at least one per game (user, Sep 8 2026), own paper book
+    # (Pick.strategy = "overs"). No extra credits: the main markets are
+    # already fetched for the unders card.
+    overs_enabled: bool = Field(default=True)
+    overs_bankroll: float = Field(default=100.0, description="Straight-overs section's paper bankroll")
+    ladder_markets: str = Field(
+        default="player_receptions,player_reception_yds,player_rush_yds",
+        description=(
+            "Base markets whose alternate boards the ladder prices (1 credit per game "
+            "each). All three are on: the pool is an experiment by the user's choice, "
+            "even though the receptions ladder over-claims by 10-20pp in the diagnostic."
+        ),
+    )
 
     # OpenWeatherMap
     weather_api_key: str = Field(default="", description="OpenWeatherMap API key")
@@ -127,6 +152,13 @@ class Settings(BaseSettings):
     )
     agent_claude_max_call_usd: float = Field(
         default=0.25, description="Hard per-call spend cap passed to claude --max-budget-usd"
+    )
+    agent_retries: int = Field(
+        default=1,
+        description=(
+            "Extra attempts when a validator call fails or is killed on its cap — a "
+            "skipped validation should never come into play (user, Sep 2026)"
+        ),
     )
     agent_claude_timeout: int = Field(
         default=180,

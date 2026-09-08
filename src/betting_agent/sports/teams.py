@@ -56,6 +56,15 @@ def _abbrev_to_full(sport: str) -> dict[str, str]:
     return out
 
 
+def full_team_name(sport: str, name: str | None) -> str | None:
+    """Full club name for an abbreviation ("NE" → "New England Patriots").
+    A full name or an unknown value comes back unchanged."""
+    if name is None:
+        return None
+    key = str(name).strip()
+    return _abbrev_to_full(sport).get(key, key) if key else None
+
+
 def canonical_team(sport: str, name: str | None) -> str | None:
     """
     Return the canonical abbreviation for a team.

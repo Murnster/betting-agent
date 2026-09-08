@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# NFL props loop — the one entry point cron calls. Everything is safe to run
+# on any day: off-days exit before spending a credit, --closing spends only
+# for games kicking off inside its window, grading is idempotent.
+#
+#   scripts/nfl_loop.sh card     game day: today's slate → picks, Discord card
+#   scripts/nfl_loop.sh closing  pre-kickoff: closing prices on held picks → CLV
+#   scripts/nfl_loop.sh grade    next morning: finalize games, grade, results post
+#   scripts/nfl_loop.sh backup   pg_dump to backups/postgres/, prune >30 days
+#
+# Cron gets a minimal PATH, so uv and the claude CLI (validator) are located
+# here; override with UV_BIN / CLAUDE_BIN_DIR if they live elsewhere.
+# Full setup: docs/NFL_SETUP.md
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_DIR="$PROJECT_ROOT/logs"
+mkdir -p "$LOG_DIR"
+
+UV_BIN="${UV_BIN:-$HOME/.local/bin/uv}"
+CLAUDE_BIN_DIR="${CLAUDE_BIN_DIR:-$HOME/.local/bin}"
+export PATH="$CLAUDE_BIN_DIR:$(dirname "$UV_BIN"):/usr/local/bin:/usr/bin:/bin"
+# The validator shells out to `claude -p`; it must not think it is nested in
+# an interactive Claude Code session.
+unset CLAUDECODE
+
+# Games to price on a full slate. Each game costs 6 Odds API credits (2
+# receiving markets + TD board + 3 ladder boards); the free tier is 500/month.
+SUGGEST="${NFL_SUGGEST:-6}"
+
+cd "$PROJECT_ROOT"
+stamp() { date '+%Y-%m-%d %H:%M:%S'; }
+
+case "${1:-}" in
+  card)
+    echo "[$(stamp)] card: today's slate (top $SUGGEST games by model heat)"
+    "$UV_BIN" run python scripts/props.py --today --save --suggest "$SUGGEST"
+    ;;
+  closing)
+    echo "[$(stamp)] closing: held picks kicking off inside the window"
+    "$UV_BIN" run python scripts/props.py --closing --window-minutes "${NFL_CLOSING_WINDOW:-90}"
+    ;;
+  grade)
+    echo "[$(stamp)] grade: finalize NFL games, grade props, post results"
+    "$UV_BIN" run python scripts/grade.py --sport NFL
+    ;;
+  backup)
+    echo "[$(stamp)] backup: pg_dump"
+    "$UV_BIN" run python scripts/backup_db.py
+    ;;
+  crontab)
+    # Print the schedule for `crontab -e`. Times are the MACHINE'S local time:
+    # props.py --today matches kickoffs to the local calendar day, so the box
+    # should run in a North American zone (this schedule assumes ET+1,
+    # America/Halifax; shift the hours if you run elsewhere).
+    cat <<EOF
+# ---- betting-agent NFL props loop (docs/NFL_SETUP.md) ----
+SHELL=/bin/bash
+# Sunday (and Saturday in Dec/Jan): the card at 12:45 local, before the 1pm ET window
+45 12 * * 0,6   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Thursday + Monday primetime: the card at 19:00 local
+0  19 * * 1,4   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Closing prices, hourly through every game-day window (free when nothing is due)
+0  12-23 * * 0,1,4,6  $PROJECT_ROOT/scripts/nfl_loop.sh closing >> $LOG_DIR/nfl_closing.log 2>&1
+# Grade every morning (stats for a Sunday land on nflverse Monday/Tuesday; re-runs are free)
+0  9  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh grade   >> $LOG_DIR/nfl_grade.log 2>&1
+# Nightly database dump
+15 3  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh backup  >> $LOG_DIR/nfl_backup.log 2>&1
+EOF
+    ;;
+  *)
+    echo "usage: $0 {card|closing|grade|backup|crontab}" >&2
+    exit 2
+    ;;
+esac

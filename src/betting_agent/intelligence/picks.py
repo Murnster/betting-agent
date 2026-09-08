@@ -86,6 +86,7 @@ class BetCandidate:
     agent_adjusted_bet: float | None = None
     agent_adjusted_kelly: float | None = None
     agent_cost_usd: float | None = None
+    strategy: str | None = None     # paper book: None = default, "ladder" = ladder hits
 
     @property
     def event_date(self) -> date:
@@ -449,6 +450,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
             c_or_p.bet_type,
             getattr(c_or_p, "player", None) or "",
             getattr(c_or_p, "market", None) or "",
+            getattr(c_or_p, "strategy", None) or "",
         )
 
     with get_session() as session:
@@ -512,6 +514,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 recommended_bet=c.recommended_bet,
                 bankroll_at_pick=c.bankroll_at_pick,
                 on_card=bool((c.extra or {}).get("card")),
+                strategy=c.strategy,
             )
             session.add(pick)
             existing[key] = pick

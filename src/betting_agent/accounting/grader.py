@@ -124,6 +124,8 @@ def _grade_prop(pick: Pick, actual: float | str | None) -> str | None:
         logger.warning("Prop pick %s has no line — cannot grade", pick.id)
         return None
     side = (pick.pick_side or "").strip().lower()
+    # Anytime TD: "yes"/"no" on a 0.5 line is over/under on the TD count.
+    side = {"yes": "over", "no": "under"}.get(side, side)
     if side not in ("over", "under"):
         logger.warning("Prop pick %s has side '%s', expected over/under", pick.id, pick.pick_side)
         return None

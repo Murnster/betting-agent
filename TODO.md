@@ -371,15 +371,88 @@ applied):
   the line held, line moves for/against otherwise, by `edge` bucket. Promote
   leans to picks only if CLV is positive with a usable sample; otherwise
   keep them as labelled leans (or drop them from the card).
-- [ ] **Cron for the props loop — deferred by the user ("we'll do this
-  later"); run by hand until then.** Proposed schedule (machine is
-  America/Halifax, ADT = ET+1):
-  - Sun + Sat: 12:45 `props.py --today --save --suggest 6`
-  - Thu + Mon: 19:00 `props.py --today --save`
-  - game days, hourly 12:00–22:00: `props.py --closing`
-  - daily 09:00 `grade.py`; daily 03:15 `backup_db.py`
-  Drop `daily_workflow.sh` from consideration — it is the NBA/NHL
-  game-market loop.
+- [ ] **Anytime-TD scorers — review the window after 4–6 weeks (built
+  2026-09-07, user: "I want it to try to find an edge on who is likely to
+  score a touchdown and I'm aware this is extremely difficult").**
+  `sports/nfl/td_props.py`, `scripts/td_props_diagnostic.py`,
+  `generate_td_candidates` in props.py. Live: `player_anytime_td` is Yes-only
+  on DraftKings/FanDuel/BetOnline/BetRivers/Bovada (~30 players/game), not on
+  Pinnacle; fair price = board de-vigged to market-implied TDs; DraftKings
+  board hold measured 25% on the opener. First live run picked two bench
+  players at +3000/+4500 (position-mean shrinkage gave every backup a 10%
+  floor) → prior is now usage-scaled and `MIN_FAIR_PROB` 0.10 refuses long
+  shots. Diagnostic (2024-25 walk-forward vs a usage-aware proxy board, so
+  still somewhat optimistic): picks in the 8–15% edge window n=655, hit 30.4%
+  vs claimed 34.4%, flat ROI +10% at a 25% hold in both seasons, ~2.3 per
+  game; above 15% edge realised probability collapses (claimed 38%, realised
+  24%), so the market carries a CAP as well as a floor. Within the window the
+  edge sits with mid-priced players (fair 10–20%: hit 26.3% vs 26.7% claimed,
+  ROI +38%) while fair 30–40% favourites lose (−16%) — watch this split in
+  the live sample. User decision (Sep 7): the TD scorer is on the card like
+  the game lean — best edge per game always shown, PICK (paper stake) inside
+  the 8–15% window, LEAN (stake 0) otherwise; validated with the props.
+  Review query: `picks where market='player_anytime_td'` — hit rate vs mean
+  `implied_prob` (the fair price, `avg_fair_pct` in the results post), CLV
+  where captured, and the logged board hold, split PICK vs LEAN
+  (`extra.td_pick`). Decide then whether the window moves and whether TD
+  picks should count against the prop caps. Ideas not yet used: red-zone /
+  goal-line touch shares from `load_pbp` (free); rookies with no history
+  cannot be priced at all (Jadarian Price, 2nd on the opener board).
+- [ ] **Ladder hits — review the section after 4–6 weeks (built 2026-09-08,
+  user: "the best overs picks as its own running section … ladder hits like
+  60+ receiving yards, 6 receptions, 40+ rushing … tracked by their own
+  bankroll").** `generate_ladder_candidates` in props.py,
+  `scripts/ladder_diagnostic.py`, `project_ladder`/`prob_hit`/tail
+  calibrator in `sports/nfl/props.py`, `Pick.strategy="ladder"`. Policy
+  (diagnostic v3, 2024-25 walk-forward on the ladder projection, milestone
+  rungs, fair 20–65%, vs a trailing-mean proxy book): receiving yards at a
+  12% floor n=439, hit 49.4% vs 52.1% claimed, +31% at a 10% hold, both
+  seasons; rushing at 8% n=478, hit 48.3% vs 44.4%, +38% (2024 +52%, 2025
+  +25%); receptions OFF (over-claims 10–20pp). User then lowered the floors
+  so the section fires (Sep 8: "I still want to see them, we can lower the
+  floor for those a bit"): receiving 10% (diagnostic hit 44.1% vs 50.1%,
+  +17%), rushing 6% (44.2% vs 43.5%, +31%), cap 25% / 15%; and the best over
+  per game is always kept. **Reframed the same day as an experimental pick
+  pool (user: "I want the ladders and the potential overs to be picks in
+  their own separate pool. I don't care if overall long term they lose
+  money, I just want to experiment with the models"):** no LEAN tier, every
+  entry staked from LADDER_BANKROLL, floors 3% on all three markets, all
+  three ladders on including receptions (the diagnostic's 10-20pp
+  over-claim stands — the review should show it), caps kept. Review by
+  edge band (`edge` on the pick) and by market: the diagnostic predicts
+  rushing roughly calibrated, receiving under by ~6pp, receptions worst.
+  **Straight overs added the same evening** (user: "at least one straight
+  over line ... in these primetime games"): `generate_over_candidates`,
+  `Pick.strategy="overs"`, `OVERS_BANKROLL`, best main-line Over per game
+  always a pick (flat 1% stake when the model has no edge —
+  `extra.flat_stake`; Kelly otherwise), further overs at 3%. Review with the
+  ladder: split flat-stake entries (edge ≤ 0) from Kelly picks; the opener's
+  board had the ladder projection under the book on 20 of 22 main lines, so
+  the flat-stake group will dominate early and its hit rate vs `implied_prob`
+  is the honest test of the "best over" selection.
+  Trade-off recorded: with the main shrinkage (prior 4) the receiving ladder
+  was calibrated at an 8% floor (hit 47.9% vs 47.4%) but could not see WR1
+  boards at all (JSN projected 56 vs an 82.5 line); with prior 1 it sees them
+  (65) but over-claims ~5pp at 8%, hence the 12% floor. An intermediate prior
+  (2) was not tested. The opener produced zero ladder hits — the book's
+  milestone boards are on stars the model still prices well under the book
+  (defence factor at its 0.8 floor took 20% off JSN). Review query: `picks
+  where strategy='ladder'` — hit rate vs `avg_fair_pct`, ROI, bankroll from
+  `LADDER_BANKROLL`, per base market (`extra.base_market` is not stored —
+  use `market`), and how many fired per week. Decide: keep the section, loosen
+  the receiving floor, try prior 2, relax the defence clip for the ladder, or
+  turn the receptions ladder back off (`LADDER_MARKETS`). Credit note: the
+  three ladder markets add 3 credits per game (6 per game total); a full
+  week is ~96 credits + closing captures — over the free tier if every game
+  is fetched, so `--suggest N` matters more now.
+- [ ] **Cron for the props loop — script written 2026-09-08
+  (`scripts/nfl_loop.sh`, schedule via `nfl_loop.sh crontab`, install guide
+  `docs/NFL_SETUP.md`); the user is standing it up on a second laptop to run
+  non-stop.** Not installed on this box. Once the laptop is live: stop any
+  manual runs here (two machines = two ledgers + double Discord posts), and
+  confirm the first Sunday's `logs/nfl_card.log` shows the Opus validator
+  cost and `x-requests-remaining` where expected (~105 credits/week at
+  `NFL_SUGGEST=6`). `daily_workflow.sh` is the NBA/NHL loop — not used.
 
 Free model inputs not yet used (Phase 4 candidates — only after the paper
 baseline exists, and each gated by `props_diagnostic.py`): schedule

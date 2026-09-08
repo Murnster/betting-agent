@@ -29,18 +29,38 @@ from scipy import stats as sps
 logger = logging.getLogger(__name__)
 
 RECEIVING_POSITIONS = ("WR", "TE", "RB", "FB")
+RUSHING_POSITIONS = ("RB", "FB", "QB", "WR")
 
 # Odds API market key → player-stats column (grading supports more markets
-# than the models project).
+# than the models project). The `_alternate` keys are the books' ladder
+# boards — the same stat at other numbers — and grade off the same column.
 MARKET_STAT_COLUMNS: dict[str, str] = {
     "player_receptions": "receptions",
+    "player_receptions_alternate": "receptions",
     "player_reception_yds": "receiving_yards",
+    "player_reception_yds_alternate": "receiving_yards",
     "player_rush_yds": "rushing_yards",
+    "player_rush_yds_alternate": "rushing_yards",
     "player_pass_yds": "passing_yards",
     "player_pass_tds": "passing_tds",
+    "player_anytime_td": "anytime_tds",   # derived: see td_props.add_anytime_td_column
 }
 
+#: Markets the main card prices (both sides, floors from props_diagnostic.py).
 MODELED_MARKETS = ("player_receptions", "player_reception_yds")
+#: Markets ReceivingPropsModel can build a distribution for. Rushing yards is
+#: projected for the ladder only — it has no main-card diagnostic.
+DISTRIBUTION_MARKETS = ("player_receptions", "player_reception_yds", "player_rush_yds")
+ALTERNATE_MARKETS = {m: f"{m}_alternate" for m in DISTRIBUTION_MARKETS}
+
+
+def base_market(key: str | None) -> str:
+    """'player_reception_yds_alternate' → 'player_reception_yds'."""
+    return (key or "").removesuffix("_alternate")
+
+
+def is_alternate_market(key: str | None) -> bool:
+    return bool(key) and key.endswith("_alternate")
 
 # Sentinel returned by stat lookups when the week's stats ARE published but
 # the player has no row — a DNP. Distinct from None (stats not yet available),
@@ -69,8 +89,20 @@ def pseudo_lines(market: str, mean: float) -> list[float]:
 PROP_EDGE_FLOORS = {
     "player_receptions": 0.10,
     "player_reception_yds": 0.15,
+    "player_anytime_td": 0.08,
 }
 DEFAULT_EDGE_FLOOR = 0.10
+
+#: Per-market edge CAPS (exclusive). scripts/td_props_diagnostic.py (2024-25
+#: walk-forward vs a usage-aware proxy board, long shots excluded): anytime-TD
+#: picks in the 8-15% window hit 30.4% vs 34.4% claimed (n=655, +10% flat ROI
+#: at the measured 25% board hold, the same in both seasons) but realised
+#: probability FALLS above 15% (claimed 38%, realised 24%) — when the model
+#: disagrees with the market that strongly, the model is the one that is
+#: wrong. The receiving markets show no such turnover and carry no cap.
+PROP_EDGE_CAPS = {
+    "player_anytime_td": 0.15,
+}
 
 
 def edge_floor(market: str, override: float | None = None) -> float:
@@ -80,9 +112,133 @@ def edge_floor(market: str, override: float | None = None) -> float:
     return PROP_EDGE_FLOORS.get(market, DEFAULT_EDGE_FLOOR)
 
 
+def edge_cap(market: str) -> float | None:
+    """Edge at or above which a prop is NOT bet (None = no cap)."""
+    return PROP_EDGE_CAPS.get(market)
+
+
+# ---- Ladder hits (scripts/props.py generate_ladder_candidates) ----
+#
+# The "best overs" section: the player reaching a milestone — 60+ receiving
+# yards, 6+ receptions, 40+ rushing — priced on the books' alternate boards
+# (Over-only ladders of 10-18 rungs per player) plus the main-line Over.
+# Policy is set by scripts/ladder_diagnostic.py; re-run it after any change
+# to the distributions or the tail calibrator.
+
+#: Rungs the tail calibrator trains on and the diagnostic evaluates — the
+#: numbers DraftKings/FanDuel actually hang.
+LADDER_RUNGS: dict[str, tuple[float, ...]] = {
+    "player_receptions": tuple(x + 0.5 for x in range(1, 12)),
+    "player_reception_yds": (9.5, 14.5, 19.5, 24.5, 29.5, 39.5, 49.5, 59.5, 69.5, 79.5,
+                             89.5, 99.5, 109.5, 124.5, 149.5),
+    "player_rush_yds": (9.5, 14.5, 19.5, 24.5, 29.5, 39.5, 49.5, 59.5, 69.5, 79.5,
+                        89.5, 99.5, 109.5, 124.5, 149.5),
+}
+#: A rung must be a milestone: at least this number. Below it the "edge" the
+#: diagnostic finds is on 10+/15+ yard rungs for low-usage players — depth
+#: chart guesses, not milestones, and not numbers books hang anyway.
+LADDER_MIN_RUNG = {
+    "player_receptions": 4.5,
+    "player_reception_yds": 39.5,
+    "player_rush_yds": 39.5,
+}
+#: Edge a ladder rung must clear to be a pick, by base market. The ladder
+#: is an EXPERIMENTAL pick pool by the user's decision (Sep 8 2026: "I want
+#: the ladders and the potential overs to be picks in their own separate
+#: pool. I don't care if overall long term they lose money, I just want to
+#: experiment with the models and see if they somehow pick good overs or
+#: ladders like the main picks for the unders") — so the floors are set
+#: where the model starts to disagree with the book at all (the main card's
+#: MIN_EDGE tier), not where ladder_diagnostic.py says the edge is real.
+#: For the record, that diagnostic (2024-25 walk-forward on the ladder
+#: projection, milestone rungs, fair 20-65%, best rung per player, vs a
+#: trailing-mean proxy book) found: rushing yards calibrated from ~5% up
+#: (44.2% hit vs 43.5% claimed, +31% flat ROI at a 10% hold); receiving
+#: yards over-claim ~6pp at 10% (44.1% vs 50.1%, +17%) and ~3pp at 12%;
+#: receptions over-claim 10-20pp at every floor. Expect the pool to run
+#: under its claimed probabilities; the point is to see by how much.
+LADDER_EDGE_FLOORS = {
+    "player_receptions": 0.03,
+    "player_reception_yds": 0.03,
+    "player_rush_yds": 0.03,
+}
+#: Edge at or above which a rung is NOT bet: realised probability turns
+#: over above 15% claimed edge for rushing yards (claimed 41%, realised 35%
+#: at 15-20%; 44% vs 33% at 20-30%) — the model, not the book, is wrong
+#: there. Receiving yards show no turnover through 25%.
+LADDER_EDGE_CAPS = {
+    "player_receptions": 0.15,
+    "player_reception_yds": 0.25,
+    "player_rush_yds": 0.15,
+}
+#: Fair-probability window for a rung. Below the floor is long-shot country
+#: (favourite-longshot bias lives in the book's hold there, which a uniform
+#: de-vig cannot see); above the cap it is a chalky main-line over, not a
+#: milestone.
+LADDER_MIN_FAIR_PROB = 0.20
+LADDER_MAX_FAIR_PROB = 0.65
+#: Hold applied to an Over-only rung when the player has no main-line pair
+#: to measure the book's hold from (DK/FD price main lines at -110/-114).
+DEFAULT_LADDER_HOLD = 0.05
+
+
+def ladder_edge_floor(market: str, override: float | None = None) -> float:
+    if override is not None:
+        return override
+    return LADDER_EDGE_FLOORS.get(base_market(market), DEFAULT_EDGE_FLOOR)
+
+
+def ladder_edge_cap(market: str) -> float:
+    return LADDER_EDGE_CAPS.get(base_market(market), 0.15)
+
+
+def ladder_min_rung(market: str) -> float:
+    return LADDER_MIN_RUNG.get(base_market(market), 0.0)
+
+
+LADDER_STAT_LABELS = {
+    "player_receptions": "receptions",
+    "player_reception_yds": "receiving yds",
+    "player_rush_yds": "rushing yds",
+}
+
+#: Straight overs (user, Sep 8 2026: "there should be at least one straight
+#: over line to add in these primetime games"): the book's main-line Over on
+#: the receiving markets, priced by the ladder projection, own paper book
+#: (Pick.strategy = "overs"). The game's best over is ALWAYS a pick — when
+#: the model has no edge on any over it is staked flat at OVERS_MIN_STAKE_PCT
+#: of the overs bankroll so the selection is still tracked; further overs in
+#: the game need OVERS_EDGE_FLOOR. Same experiment as the ladder: the main
+#: projection is built to find unders and sits under the book on most
+#: starters, so expect many flat-stake entries.
+OVERS_EDGE_FLOOR = 0.03
+OVERS_MIN_STAKE_PCT = 0.01
+
+
+def over_label(player: str | None, market: str | None, line: float | None) -> str:
+    """'Romeo Doubs over 36.5 receiving yds' — a straight main-line over."""
+    stat = LADDER_STAT_LABELS.get(base_market(market), _market_label_text(market))
+    if line is None:
+        return f"{player or '?'} over {stat}"
+    return f"{player or '?'} over {float(line):g} {stat}"
+
+
+def ladder_label(player: str | None, market: str | None, line: float | None) -> str:
+    """'A.J. Brown 60+ receiving yds' — the milestone the rung pays on."""
+    stat = LADDER_STAT_LABELS.get(base_market(market), _market_label_text(market))
+    if line is None:
+        return f"{player or '?'} {stat}"
+    return f"{player or '?'} {int(np.floor(float(line))) + 1}+ {stat}"
+
+
+def _market_label_text(market: str | None) -> str:
+    return base_market(market).removeprefix("player_").replace("_", " ")
+
+
 #: Smallest line worth treating as quotable — books don't hang numbers below
 #: these, so lines under them are noise for both calibration and betting.
-MIN_QUOTABLE_LINE = {"player_receptions": 1.5, "player_reception_yds": 10.0}
+MIN_QUOTABLE_LINE = {"player_receptions": 1.5, "player_reception_yds": 10.0,
+                     "player_rush_yds": 10.0}
 
 
 def book_proxy_line(prior_values: list[float], market: str) -> float | None:
@@ -136,25 +292,37 @@ def load_player_stats(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def build_receiving_history(stats: pd.DataFrame) -> pd.DataFrame:
+def build_stat_history(stats: pd.DataFrame, positions: tuple[str, ...],
+                       stat_cols: tuple[str, ...]) -> pd.DataFrame:
     """
-    Filter weekly stats to pass-catchers and the columns the models need,
+    Filter weekly stats to `positions` and the columns a model needs,
     ordered by time. Adds `t` — a global game-order index used for
     "everything before week X" splits.
     """
     if stats.empty:
         return stats
-    df = stats[stats["position"].isin(RECEIVING_POSITIONS)].copy()
+    df = stats[stats["position"].isin(positions)].copy()
     keep = [
         "player_id", "player_display_name", "position", "season", "week",
-        "season_type", "team", "opponent_team", "receptions", "targets",
-        "receiving_yards",
+        "season_type", "team", "opponent_team", *stat_cols,
     ]
     df = df[[c for c in keep if c in df.columns]]
     df["player_key"] = df["player_display_name"].map(normalize_player)
     df = df.sort_values(["season", "week"]).reset_index(drop=True)
     df["t"] = df["season"] * 100 + df["week"]
     return df
+
+
+def build_receiving_history(stats: pd.DataFrame) -> pd.DataFrame:
+    """Pass-catchers' receptions / targets / receiving yards by game."""
+    return build_stat_history(stats, RECEIVING_POSITIONS,
+                              ("receptions", "targets", "receiving_yards"))
+
+
+def build_rushing_history(stats: pd.DataFrame) -> pd.DataFrame:
+    """Ball-carriers' (backs and quarterbacks, plus receivers who get
+    carries) rushing yards / carries by game — the ladder's rushing model."""
+    return build_stat_history(stats, RUSHING_POSITIONS, ("rushing_yards", "carries"))
 
 
 #: How many distinct slates back a player must have appeared to count as
@@ -191,10 +359,11 @@ def active_player_keys(history: pd.DataFrame, asof_t: int,
     return set(rows["player_key"].unique())
 
 
-def current_teams(season: int) -> dict[str, str]:
+def current_teams(season: int, positions: tuple[str, ...] = RECEIVING_POSITIONS,
+                  ) -> dict[str, str]:
     """
-    Player key → current team from the published roster, for pass-catchers
-    on active status. Stats rows only know the team a player LAST PLAYED for,
+    Player key → current team from the published roster, for `positions`
+    (default pass-catchers) on active status. Stats rows only know the team a player LAST PLAYED for,
     so offseason movers would otherwise be attributed to the wrong side.
     Returns {} on any failure — callers fall back to the stats-derived team.
     """
@@ -206,7 +375,7 @@ def current_teams(season: int) -> dict[str, str]:
     if roster.empty or not {"status", "position", "full_name", "team"} <= set(roster.columns):
         return {}
     active = roster[
-        (roster["status"] == "ACT") & (roster["position"].isin(RECEIVING_POSITIONS))
+        (roster["status"] == "ACT") & (roster["position"].isin(positions))
     ]
     return {
         normalize_player(name): str(team)
@@ -369,6 +538,7 @@ class Projection:
     games: int              # player games the mean is built on
     _dist: object           # frozen scipy distribution
     _calibrator: object = None   # isotonic map raw P(over) → empirical
+    _tail_calibrator: object = None   # same, trained on the ladder rungs
 
     def _raw_over(self, line: float) -> float:
         if self.market == "player_receptions":
@@ -390,6 +560,19 @@ class Projection:
     def prob_under(self, line: float) -> float:
         return max(0.0, 1.0 - self.prob_over(line) - self._push_mass(line))
 
+    def prob_hit(self, line: float) -> float:
+        """
+        P(stat > line) for a ladder rung. The main calibrator only saw
+        pseudo-lines near the projection and the book's main number, so it
+        clips in the tails; the tail calibrator was fit on the rungs the
+        books hang (LADDER_RUNGS) and covers the whole range.
+        """
+        p = self._raw_over(line)
+        cal = self._tail_calibrator if self._tail_calibrator is not None else self._calibrator
+        if cal is not None:
+            p = float(cal.predict([p])[0])
+        return float(np.clip(p, 0.01, 0.99))
+
 
 class ReceivingPropsModel:
     """
@@ -405,12 +588,18 @@ class ReceivingPropsModel:
 
     HALFLIFE = 6.0          # games; recency weighting for the player mean
     PRIOR_GAMES = 4.0       # pseudo-games of shrinkage toward position mean
+    #: The ladder's projection shrinks far less. Four pseudo-games toward the
+    #: position mean pull a WR1 with nine effective games ~17 yards under his
+    #: own average — books hang the milestone boards on exactly those
+    #: players, so the main projection can never see an over there. The
+    #: tail calibrator is fit on this projection, not the main one.
+    LADDER_PRIOR_GAMES = 1.0
     MIN_GAMES = 4           # fewer prior games than this → no projection
     DEF_WINDOW = 8          # defensive games in the opponent factor
     DEF_CLIP = (0.8, 1.2)
 
     def __init__(self, market: str):
-        if market not in MODELED_MARKETS:
+        if market not in DISTRIBUTION_MARKETS:
             raise ValueError(f"No projection model for market '{market}'")
         self.market = market
         self.stat_col = MARKET_STAT_COLUMNS[market]
@@ -427,6 +616,7 @@ class ReceivingPropsModel:
         self.yards_sigma = np.array([0.72, 0.83, 0.89, 0.76])
         self.position_means: dict[str, float] = {}
         self.prob_calibrator = None   # isotonic raw P(over) → empirical, from tuning
+        self.tail_calibrator = None   # same, on the ladder rungs (see prob_hit)
 
     # ---- fitting ----
 
@@ -489,7 +679,7 @@ class ReceivingPropsModel:
                            len(cached))
             return self.dispersion_scale
 
-        if self.market == "player_reception_yds":
+        if self.market != "player_receptions":
             df = pd.DataFrame(
                 [(mean, np.log(actual + YARDS_SHIFT) - np.log(mean + YARDS_SHIFT))
                  for mean, _, actual, _ in cached],
@@ -545,6 +735,25 @@ class ReceivingPropsModel:
         self.prob_calibrator = IsotonicRegression(
             y_min=0.0, y_max=1.0, out_of_bounds="clip"
         ).fit(raw_p, hits)
+
+        # Ladder rungs: the same kind of map for the ladder's own projection
+        # (LADDER_PRIOR_GAMES), fit where the alternate boards live — well
+        # into the tails the main calibrator never sees and would clip.
+        raw_t, hits_t = [], []
+        for _, g in rows.iterrows():
+            proj = self.project_ladder(g["player_key"], int(g["season"]), int(g["week"]))
+            if proj is None:
+                continue
+            actual = max(0.0, float(g[self.stat_col]))
+            for rung in LADDER_RUNGS.get(self.market, ()):
+                p = proj._raw_over(rung)
+                if 0.005 <= p <= 0.995:
+                    raw_t.append(p)
+                    hits_t.append(float(actual > rung))
+        if len(raw_t) >= 200:
+            self.tail_calibrator = IsotonicRegression(
+                y_min=0.0, y_max=1.0, out_of_bounds="clip"
+            ).fit(raw_t, hits_t)
         return self.dispersion_scale
 
     def extend_history(self, later_rows: pd.DataFrame) -> None:
@@ -593,16 +802,30 @@ class ReceivingPropsModel:
             return 1.0
         return float(np.clip(recent.mean() / league_pg, *self.DEF_CLIP))
 
-    def project(
+    def project_ladder(
         self,
         player_key: str,
         asof_season: int,
         asof_week: int,
         opponent: str | None = None,
     ) -> Projection | None:
+        """The ladder's projection: lighter shrinkage, tail calibrator attached."""
+        return self.project(player_key, asof_season, asof_week, opponent=opponent,
+                            prior_games=self.LADDER_PRIOR_GAMES)
+
+    def project(
+        self,
+        player_key: str,
+        asof_season: int,
+        asof_week: int,
+        opponent: str | None = None,
+        prior_games: float | None = None,
+    ) -> Projection | None:
         """
         Distribution for the player's stat in (asof_season, asof_week),
-        using only games strictly before it.
+        using only games strictly before it. `prior_games` overrides the
+        shrinkage (the ladder passes LADDER_PRIOR_GAMES via project_ladder);
+        only such projections carry the tail calibrator — it was fit on them.
         """
         if self.history is None:
             raise RuntimeError("fit() before project()")
@@ -621,7 +844,8 @@ class ReceivingPropsModel:
 
         position = past["position"].iloc[-1]
         pos_mean = self.position_means.get(position, float(np.mean(values)))
-        mean = (n_eff * ew_mean + self.PRIOR_GAMES * pos_mean) / (n_eff + self.PRIOR_GAMES)
+        prior = self.PRIOR_GAMES if prior_games is None else prior_games
+        mean = (n_eff * ew_mean + prior * pos_mean) / (n_eff + prior)
 
         if opponent:
             mean *= self._defense_factor(opponent, position, asof_t)
@@ -632,6 +856,7 @@ class ReceivingPropsModel:
         return Projection(
             player=player_key, market=self.market, mean=mean,
             games=len(past), _dist=dist, _calibrator=self.prob_calibrator,
+            _tail_calibrator=self.tail_calibrator if prior_games is not None else None,
         )
 
 
@@ -653,7 +878,9 @@ def make_stat_lookup(seasons: list[int]):
     stats = load_player_stats(seasons)
     if stats.empty:
         return lambda player, market, game: None
-    stats = stats.copy()
+    from betting_agent.sports.nfl.td_props import add_anytime_td_column
+
+    stats = add_anytime_td_column(stats)
     stats["player_key"] = stats["player_display_name"].map(normalize_player)
 
     schedules = pd.concat(

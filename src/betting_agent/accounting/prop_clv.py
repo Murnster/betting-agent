@@ -24,6 +24,7 @@ from betting_agent.sports.nfl.props import (
     normalize_player,
     pair_outcomes,
 )
+from betting_agent.sports.nfl.td_props import TD_MARKET, yes_outcomes
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,12 @@ def _closing_quote(event: dict, player_key: str, market: str, side: str,
     for book in books_in_preference(event, book_order):
         for mkt in book.get("markets", []):
             if mkt.get("key") != market:
+                continue
+            if market == TD_MARKET:
+                # Yes-only board, no line: the closing quote is the Yes price.
+                for player, outcome in yes_outcomes(mkt).items():
+                    if normalize_player(player) == player_key:
+                        return float(pick_line), int(outcome["price"])
                 continue
             for (player, line), pair in pair_outcomes(mkt).items():
                 if normalize_player(player) != player_key:

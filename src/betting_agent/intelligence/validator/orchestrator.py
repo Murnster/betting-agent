@@ -174,16 +174,25 @@ def validate_picks(
             spread_line=spread_line,
             total_line=total_line,
         )
-        result = validator.validate(payload)
-        if result is None:
-            summary.skipped_games += 1
-            _mark_group(group, "SKIPPED", ["validator request failed"])
+        # The user's goal (Sep 8 2026): a skipped validation must never come
+        # into play. A failed call is retried before the game is given up on;
+        # every attempt's spend is booked so the daily gate sees it.
+        result = None
+        for attempt in range(1 + max(0, settings.agent_retries)):
+            result = validator.validate(payload)
+            if result is not None:
+                break
             # A call can fail after spending (the CLI's --max-budget-usd
             # kills it mid-search); book that spend so the daily gate sees it.
             wasted = float(getattr(validator, "last_call_cost_usd", 0.0) or 0.0)
             if wasted > 0:
                 summary.total_cost_usd += wasted
                 summary.records.extend(_failed_call_records(group, wasted))
+            logger.warning("Validator call failed for %s @ %s (attempt %d)",
+                           game.away_team, game.home_team, attempt + 1)
+        if result is None:
+            summary.skipped_games += 1
+            _mark_group(group, "SKIPPED", ["validator request failed"])
             continue
 
         summary.validated_games += 1
@@ -232,6 +241,8 @@ def save_agent_validations_to_db(records: list[AgentValidationRecord]) -> None:
 
 
 def _candidate_input(pick: BetCandidate) -> CandidateValidationInput:
+    from betting_agent.sports.teams import full_team_name
+
     extra = pick.extra or {}
     recent = extra.get("recent_values")
     return CandidateValidationInput(
@@ -244,6 +255,7 @@ def _candidate_input(pick: BetCandidate) -> CandidateValidationInput:
         kelly_fraction=pick.kelly_fraction,
         recommended_bet=pick.recommended_bet,
         player=pick.player,
+        team=full_team_name(pick.sport, extra.get("team")),
         market=pick.market,
         line=pick.line,
         projection_mean=extra.get("projection_mean"),
@@ -333,13 +345,20 @@ def _apply_result(
         multiplier = 1.0
         if item.verdict == "REDUCED":
             multiplier = min(max(item.kelly_multiplier, 0.0), 1.0)
+        # SKIPPED belongs to the harness (no call, budget, failed call). A model
+        # that returns it has found nothing actionable — on the 2026 opener it
+        # did so believing two offseason movers "were not in this game".
+        verdict, reasons = item.verdict, item.reasons[:3]
+        if verdict == "SKIPPED":
+            verdict, multiplier = "UNCHANGED", 1.0
+            reasons = ["model returned SKIPPED; treated as unchanged"] + reasons[:2]
 
-        pick.agent_verdict = item.verdict
-        pick.agent_reasons = item.reasons[:3]
+        pick.agent_verdict = verdict
+        pick.agent_reasons = reasons
         pick.agent_cost_usd = per_pick_cost
         pick.extra["agent"] = {
-            "reasons": item.reasons[:3],
-            "verdict": item.verdict,
+            "reasons": reasons,
+            "verdict": verdict,
             "shadow": shadow,
             "proposed_edge": proposed_edge,
             "proposed_kelly_multiplier": multiplier,
@@ -360,10 +379,10 @@ def _apply_result(
                 sport=pick.sport,
                 bet_type=pick.bet_type,
                 pick_side=_record_side(pick),
-                verdict=item.verdict,
+                verdict=verdict,
                 original_edge=pick.original_edge,
                 adjusted_edge=proposed_edge,
-                reasons=item.reasons[:3],
+                reasons=reasons,
                 input_tokens=result.tokens_used.input,
                 output_tokens=result.tokens_used.output,
                 cost_usd=per_pick_cost,

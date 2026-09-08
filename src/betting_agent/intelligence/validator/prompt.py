@@ -23,13 +23,14 @@ def system_prompt(has_props: bool, web_search: bool = False) -> str:
         "Return strict JSON with this shape:",
         '{"game_id":"string","results":[{"bet_type":"moneyline|spread|total|prop",'
         '"pick_side":"string","player":"string or null","market":"string or null",'
-        '"verdict":"UNCHANGED|REDUCED|NO_BET|SKIPPED","edge_adjustment":0.0,'
+        '"verdict":"UNCHANGED|REDUCED|NO_BET","edge_adjustment":0.0,'
         '"adjusted_edge":0.0,"kelly_multiplier":1.0,"reasons":["short reason"]}],'
         '"tokens_used":{"input":0,"output":0},"estimated_cost_usd":0.0}',
         "Rules:",
         "- Return one result per pick in the payload, echoing its bet_type, pick_side, and "
         "(for props) player and market exactly.",
-        "- Only use verdicts UNCHANGED, REDUCED, NO_BET, or SKIPPED.",
+        "- Only use verdicts UNCHANGED, REDUCED, or NO_BET. Never SKIPPED: when you find "
+        "nothing relevant, return UNCHANGED and say so.",
         "- Keep reasons short and factual; cite the source (feed, headline) when one exists.",
         f"- Never adjust edge by more than {settings.agent_max_edge_adjustment:.2f} "
         "in absolute value.",
@@ -42,17 +43,27 @@ def system_prompt(has_props: bool, web_search: bool = False) -> str:
     if has_props:
         lines += [
             "Player props: each prop pick is over/under a player's stat line "
-            "(market player_receptions = receptions, player_reception_yds = receiving yards). "
+            "(market player_receptions = receptions, player_reception_yds = receiving yards, "
+            "player_rush_yds = rushing yards; a market ending in _alternate is a ladder rung — "
+            "side over means the player reaches that milestone; "
+            "player_anytime_td with side yes = the player scores a touchdown, line 0.5). "
             "projection_mean is the model's expected value, projection_games how many games it "
             "rests on, recent_values the player's last games of that stat (oldest first). "
             "deterministic_flags already encode the official injury report and QB1 status; "
             "treat a player_injury flag with drop=true as decisive.",
+            "Every listed player IS in this game: the sportsbook hangs these lines for this "
+            "matchup and `team` is the player's current club from the official roster. "
+            "Players change teams every offseason, so a source placing a player on another "
+            "club is stale — it is not evidence he is absent. Never return NO_BET (or any "
+            "reduction) on the grounds that a player is not part of this game.",
         ]
     if web_search:
         lines += [
             "You may use web search. Search ONLY for this week's news on the listed players "
-            "and teams (injury status, trade, QB change, suspension, coaching change). Do not "
-            "search for odds, picks, or predictions. Cite what you found in reasons.",
+            "and teams (injury status, trade, QB change, suspension, coaching change); put the "
+            "player's `team` and the season in the query so stale prior-club results do not "
+            "mislead you. Do not search for odds, picks, or predictions. Cite what you found "
+            "in reasons.",
         ]
     return "\n".join(lines)
 

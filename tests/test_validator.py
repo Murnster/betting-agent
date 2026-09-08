@@ -194,6 +194,9 @@ def test_failed_call_spend_is_booked_against_the_budget(monkeypatch):
         lambda target_date, run_cost: True,
     )
 
+    # No retry here: the retry path books each attempt's spend on its own
+    # (see test_failed_call_is_retried_before_the_game_is_skipped).
+    monkeypatch.setattr("betting_agent.intelligence.validator.orchestrator.settings.agent_retries", 0)
     a, b = _candidate(1, 0.06), _candidate(1, 0.05)
     b.bet_type = "total"
     validated, summary = validate_picks([a, b], sport="NFL", mode="all")
@@ -276,6 +279,7 @@ def test_validate_picks_continues_after_single_game_failure(monkeypatch):
         lambda target_date, run_cost: True,
     )
 
+    monkeypatch.setattr("betting_agent.intelligence.validator.orchestrator.settings.agent_retries", 0)
     validated, summary = validate_picks(
         [_candidate(1, 0.06), _candidate(2, 0.05, external_id="2")],
         sport="NFL",
@@ -498,3 +502,89 @@ def test_injury_flags_and_game_lines_reach_the_payload(monkeypatch):
     payload = captured["payload"]
     assert payload.spread_line == -3.5 and payload.total_line == 47.5
     assert {f.type for f in payload.deterministic_flags} == {"player_injury", "qb_out"}
+
+
+def test_payload_carries_the_players_current_club(monkeypatch):
+    """Sep 2026 opener: without the team the model searched the player's name,
+    found his prior club and declared two offseason movers 'not in this game'."""
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            assert payload.picks[0].team == "Kansas City Chiefs"     # "KC" expanded
+            assert payload.picks[1].team is None                     # unknown stays honest
+            return _prop_result(("Travis Kelce", "over", "UNCHANGED", 0.0, 1.0, "fine"),
+                                ("Rashee Rice", "over", "UNCHANGED", 0.0, 1.0, "fine"))
+
+    _wire(monkeypatch, _Validator())
+    kelce, rice = _prop("Travis Kelce"), _prop("Rashee Rice")
+    rice.extra.pop("team")
+    validate_picks([kelce, rice], sport="NFL", mode="all", shadow=True)
+    assert kelce.agent_verdict == "UNCHANGED"
+
+
+def test_model_returned_skipped_is_recorded_as_unchanged(monkeypatch):
+    """SKIPPED is the harness's word (no call / budget / failure); a model that
+    returns it found nothing and must not look like a skipped call."""
+    class _Validator:
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            return _prop_result(("Travis Kelce", "over", "SKIPPED", 0.0, 0.0, "not in this game"))
+
+    _wire(monkeypatch, _Validator())
+    kelce = _prop("Travis Kelce")
+    validated, summary = validate_picks([kelce], sport="NFL", mode="all", shadow=False)
+    assert validated == [kelce] and kelce.agent_verdict == "UNCHANGED"
+    assert kelce.recommended_bet == 40.0 and kelce.kelly_fraction == 0.04
+    assert kelce.agent_reasons[0].startswith("model returned SKIPPED")
+    assert "not in this game" in kelce.agent_reasons
+    assert summary.records[0].verdict == "UNCHANGED"
+
+
+def test_prompt_tells_the_model_the_roster_is_authoritative():
+    from betting_agent.intelligence.validator.prompt import system_prompt
+
+    text = system_prompt(has_props=True, web_search=True)
+    assert "Every listed player IS in this game" in text
+    assert "stale" in text and "Never SKIPPED" in text
+    assert "UNCHANGED|REDUCED|NO_BET\"" in text and "|SKIPPED" not in text
+    assert "player's `team` and the season in the query" in text
+    assert "Every listed player" not in system_prompt(has_props=False)
+
+
+def test_failed_call_is_retried_before_the_game_is_skipped(monkeypatch):
+    """A skipped validation should never come into play (user, Sep 2026):
+    one failure is retried; both attempts' spend is booked."""
+    class _Validator:
+        calls = 0
+        last_call_cost_usd = 0.0
+
+        def is_available(self):
+            return True
+
+        def validate(self, payload):
+            self.calls += 1
+            if self.calls == 1:
+                self.last_call_cost_usd = 0.30
+                return None
+            self.last_call_cost_usd = 0.0
+            return _prop_result(("Travis Kelce", "over", "UNCHANGED", 0.0, 1.0, "fine"))
+
+    v = _Validator()
+    _wire(monkeypatch, v)
+    monkeypatch.setattr("betting_agent.intelligence.validator.orchestrator.settings.agent_retries", 1)
+    kelce = _prop("Travis Kelce")
+    _, summary = validate_picks([kelce], sport="NFL", mode="all", shadow=True)
+    assert v.calls == 2 and kelce.agent_verdict == "UNCHANGED"
+    assert summary.validated_games == 1 and summary.skipped_games == 0
+    assert summary.total_cost_usd == pytest.approx(0.34)      # 0.30 wasted + 0.04
+    assert [r.verdict for r in summary.records] == ["SKIPPED", "UNCHANGED"]
+
+    monkeypatch.setattr("betting_agent.intelligence.validator.orchestrator.settings.agent_retries", 0)
+    v.calls = 0
+    kelce = _prop("Travis Kelce")
+    _, summary = validate_picks([kelce], sport="NFL", mode="all", shadow=True)
+    assert v.calls == 1 and kelce.agent_verdict == "SKIPPED"

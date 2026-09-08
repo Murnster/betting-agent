@@ -4,6 +4,8 @@ A local sports betting ETL pipeline, prediction engine, and post-picks AI valida
 
 Currently supports **NFL**, **NBA**, **NHL**, and **MLB**. The core quant pipeline runs locally; the optional validator uses paid APIs and is budget-capped by default.
 
+> **What actually runs: NFL player props.** The game-level models cannot beat closing prices (see `CLAUDE.md`), so the live strategy is the NFL props paper trade — receiving-prop unders, anytime-TD scorers, straight overs and ladder hits, each on its own paper book, validated by Claude Opus and posted to Discord. **To set it up on a machine and run it unattended, follow [`docs/NFL_SETUP.md`](docs/NFL_SETUP.md).** Everything else in this README is the general game-market pipeline (NBA/NHL/MLB are frozen).
+
 ---
 
 ## How It Works
@@ -339,22 +341,9 @@ If the validator APIs fail or the budget is exhausted, the picks pipeline contin
 
 ## Automation
 
-To run the daily workflow automatically (e.g., on a server), use the provided helper scripts:
+**NFL props loop (the live strategy):** `scripts/nfl_loop.sh` is the single cron entry point — `card` on game days, `closing` hourly through the windows, `grade` every morning, `backup` nightly. `scripts/nfl_loop.sh crontab` prints the schedule; the full install is in [`docs/NFL_SETUP.md`](docs/NFL_SETUP.md).
 
-1. **`scripts/daily_workflow.sh`**: A wrapper that runs the appropriate extraction and prediction steps based on the time of day (`morning`, `pregame`, `postgame`).
-2. **`scripts/setup_cron.sh`**: Generates the `crontab` entries to schedule the workflow.
-
-Run the setup script to see the recommended configuration:
-
-```bash
-./scripts/setup_cron.sh
-```
-
-Recommended cron addition for daily DB backups:
-
-```bash
-15 3 * * * cd /home/murney/source/betting-agent && uv run python scripts/backup_db.py >> /home/murney/source/betting-agent/logs/db_backup.log 2>&1
-```
+**Game-market loop (NBA/NHL, frozen):** `scripts/daily_workflow.sh` + `scripts/setup_cron.sh` are the older extraction/prediction automation and are not used for NFL.
 
 ---
 

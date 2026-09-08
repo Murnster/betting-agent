@@ -29,9 +29,21 @@ def get_summary(
     bet_type: str | list[str] | tuple[str, ...] | None = None,
     season: int | None = None,
     graded_since: datetime | None = None,
+    market: str | None = None,
+    exclude_market: str | None = None,
+    strategy: str | None = None,
+    exclude_strategy: str | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """
     Aggregate ROI report.
+
+    market / exclude_market filter props by Odds API market key — the
+    anytime-TD scorers are reported apart from the receiving props (they are
+    lean-like: saved at stake 0 unless the edge is inside the window).
+    strategy / exclude_strategy filter on Pick.strategy — the ladder-hits
+    and straight-overs sections keep their own paper books (`strategy=
+    "ladder"` / `"overs"`, see ledger.SIDE_BOOKS); NULL rows are the default
+    strategies and pass an exclude filter (one name or several).
     Returns dict with: total_bets, wins, losses, pushes, win_rate, total_pnl,
                        total_wagered, roi_pct, avg_edge, avg_clv.
 
@@ -57,6 +69,15 @@ def get_summary(
                 q = q.filter(Pick.bet_type.in_(list(bet_type)))
         if season:
             q = q.filter(Game.season == season)
+        if market:
+            q = q.filter(Pick.market == market)
+        if exclude_market:
+            q = q.filter((Pick.market.is_(None)) | (Pick.market != exclude_market))
+        if strategy:
+            q = q.filter(Pick.strategy == strategy)
+        if exclude_strategy:
+            from betting_agent.accounting.ledger import strategy_exclusion
+            q = q.filter(strategy_exclusion(Pick.strategy, exclude_strategy))
 
         picks = q.all()
 
@@ -73,6 +94,9 @@ def get_summary(
     # count as money wagered.
     total_wagered = sum(p.stake for p in picks if p.result != "void")
     avg_edge = sum(p.edge for p in picks) / total
+    fair = [getattr(p, "implied_prob", None) for p in picks if p.result in ("win", "loss")]
+    fair = [f for f in fair if f is not None]
+    avg_fair = sum(fair) / len(fair) if fair else None
     clv_picks = [p for p in picks if p.clv is not None]
     avg_clv = sum(p.clv for p in clv_picks) / len(clv_picks) if clv_picks else None
     clv_hits = sum(1 for p in clv_picks if p.clv > 0)
@@ -104,6 +128,9 @@ def get_summary(
         "total_wagered": round(total_wagered, 2),
         "roi_pct": round((total_pnl / total_wagered * 100.0) if total_wagered else 0.0, 2),
         "avg_edge_pct": round(avg_edge * 100.0, 2),
+        # Mean fair probability of the decided picks — the number a hit rate
+        # must beat (for anytime TD "yes" picks it is far from 50%).
+        "avg_fair_pct": round(avg_fair * 100.0, 1) if avg_fair is not None else None,
         "avg_clv_pct": round(avg_clv * 100.0, 2) if avg_clv is not None else None,
         "clv_hit_rate_pct": round(_pct(clv_hits, len(clv_picks)), 1) if clv_picks else None,
         "clv_sample": len(clv_picks),
@@ -150,6 +177,7 @@ def get_graded_picks_detail(
             "clv": pick.clv,
             "closing_line": pick.closing_line,
             "on_card": bool(getattr(pick, "on_card", False)),
+            "strategy": getattr(pick, "strategy", None),
         }
         for pick, game in rows
     ]
@@ -212,8 +240,8 @@ def format_roi_report(
             f"{summary['line_moves_against']} against (props whose number moved by close)"
         )
 
-    from betting_agent.accounting.ledger import ledger_summary
-    ledger = ledger_summary(sport=sport)
+    from betting_agent.accounting.ledger import SIDE_BOOKS, ledger_summary
+    ledger = ledger_summary(sport=sport, exclude_strategy=SIDE_BOOKS)
     if ledger["settled_picks"]:
         lines += [
             "",
@@ -224,6 +252,17 @@ def format_roi_report(
             f"  Peak ${ledger['peak_equity']:,.2f}, max drawdown ${ledger['max_drawdown']:,.2f} "
             f"over {ledger['settled_picks']} settled picks",
         ]
+    for strategy, label in (("ladder", "Ladder hits"), ("overs", "Straight overs")):
+        side = ledger_summary(sport=sport, strategy=strategy)
+        if side["settled_picks"]:
+            lines += [
+                "",
+                f"  {label} (own bankroll):",
+                "  " + "-" * 50,
+                f"  Start ${side['starting_bankroll']:,.2f} → now ${side['current_bankroll']:,.2f} "
+                f"({side['total_pnl']:+,.2f}) over {side['settled_picks']} settled picks, "
+                f"max drawdown ${side['max_drawdown']:,.2f}",
+            ]
 
     if breakdown:
         lines.append("")
