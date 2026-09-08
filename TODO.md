@@ -96,6 +96,24 @@ which was purely sizing variance.
   guardrail change rescues the game-level model, because the disagreements
   it is built to bet on are anti-predictive. Improving it needs better
   information (injuries, personnel, line movement), not better filtering.
+- [x] **Market-anchored rebuild tried (2026-09-07)** — `models/market_anchored.py`
+  + `scripts/game_model_gate.py`. The closing spread/total are the prior and
+  the model learns only the residual (existing features + QB continuity +
+  market shape; prices never enter). Walk-forward 2017-2025, 2,494 games:
+
+  | learner | Brier | disagreements right | spread ROI @3% | total ROI @3% |
+  |---|---|---|---|---|
+  | market (close) | 0.2100 | — | — | — |
+  | none (market only) | 0.2101 | — | — | — |
+  | ridge | 0.2100 | 33-40% (14 games) | −11.7% (422) | +2.1% (941, t=0.67) |
+  | xgb | 0.2137 | 38% (140 games) | −6.5% (1480) | −1.5% (1697) |
+
+  Ridge collapses to the market (the right failure mode — it is no longer
+  anti-predictive) but adds nothing: RMSE within 0.04 pts of the line,
+  totals ROI within one standard error of zero, spreads negative. **Verdict
+  unchanged: free public data cannot beat the NFL close.** Do not integrate
+  into picks.py; the game line on a card is a *market lean*, not a pick,
+  until a CLV-positive early-line strategy exists (live-only, see below).
 - [ ] Re-run the same gate for NBA/NHL/MLB once real closing lines exist
   for them; assume they fail until shown otherwise.
 - [ ] Spread is the least-bad market (−1.37%) and totals the worst

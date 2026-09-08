@@ -197,7 +197,68 @@ def attach_schedule_context(
     return out
 
 
-def build_nfl_features(df: pd.DataFrame) -> pd.DataFrame:
+# Columns kept as model inputs when the model is market-anchored (the closing
+# spread/total are the prior; the model learns the residual). Prices stay out.
+ANCHOR_COLS = ("spread_line", "total_line")
+MARGIN_SIGMA_PRIOR = 13.5   # NFL margin std around the spread, for the ML fallback
+
+
+def add_qb_continuity(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    home_qb_change / away_qb_change: 1 when the listed starter differs from
+    the same team's starter in its previous game (0 when unknown or first
+    game of the frame). nflreadpy publishes the projected starter on upcoming
+    rows, so this is available at pick time as well as in training.
+    Requires a frame sorted by game_date with home_qb_id/away_qb_id present;
+    a frame without them gets zeros.
+    """
+    out = df.copy()
+    if "home_qb_id" not in out.columns or "away_qb_id" not in out.columns:
+        out["home_qb_change"] = 0
+        out["away_qb_change"] = 0
+        return out
+    long = pd.concat([
+        pd.DataFrame({"_i": out.index, "team": out["home_team"], "qb": out["home_qb_id"]}),
+        pd.DataFrame({"_i": out.index, "team": out["away_team"], "qb": out["away_qb_id"]}),
+    ])
+    order = pd.Series(range(len(out)), index=out.index)
+    long["_ord"] = long["_i"].map(order)
+    long = long.sort_values(["team", "_ord"])
+    long["prev"] = long.groupby("team")["qb"].shift()
+    long["change"] = (long["prev"].notna() & long["qb"].notna() & (long["qb"] != long["prev"])).astype(int)
+    by_row_home = long.merge(pd.DataFrame({"_i": out.index, "team": out["home_team"]}),
+                             on=["_i", "team"])[["_i", "change"]].set_index("_i")["change"]
+    by_row_away = long.merge(pd.DataFrame({"_i": out.index, "team": out["away_team"]}),
+                             on=["_i", "team"])[["_i", "change"]].set_index("_i")["change"]
+    out["home_qb_change"] = by_row_home.reindex(out.index).fillna(0).astype(int)
+    out["away_qb_change"] = by_row_away.reindex(out.index).fillna(0).astype(int)
+    return out
+
+
+def add_market_anchor_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    market_home_prob (vig-removed moneyline, falling back to a normal CDF on
+    the spread when prices are missing) and spread_abs. Only used when
+    build_nfl_features(..., market_anchored=True).
+    """
+    from scipy.stats import norm
+
+    from betting_agent.intelligence.ev import american_to_implied_prob
+
+    out = df.copy()
+    spread = pd.to_numeric(out.get("spread_line"), errors="coerce")
+    ml_home = pd.to_numeric(out.get("home_moneyline"), errors="coerce")
+    ml_away = pd.to_numeric(out.get("away_moneyline"), errors="coerce")
+    ph = ml_home.map(lambda v: american_to_implied_prob(v) if pd.notna(v) else np.nan)
+    pa = ml_away.map(lambda v: american_to_implied_prob(v) if pd.notna(v) else np.nan)
+    fair = ph / (ph + pa)
+    fallback = pd.Series(norm.cdf(spread / MARGIN_SIGMA_PRIOR), index=out.index)
+    out["market_home_prob"] = fair.where(fair.notna(), fallback)
+    out["spread_abs"] = spread.abs()
+    return out
+
+
+def build_nfl_features(df: pd.DataFrame, market_anchored: bool = False) -> pd.DataFrame:
     """
     Full NFL feature engineering pipeline.
 
@@ -206,6 +267,10 @@ def build_nfl_features(df: pd.DataFrame) -> pd.DataFrame:
     is applied automatically.
 
     Returns feature matrix ready for XGBoost (all numeric).
+
+    market_anchored=True keeps the closing spread/total as inputs (plus the
+    vig-removed moneyline probability) for a model that predicts the residual
+    around the market rather than the game from scratch. Prices never enter.
     """
     df = normalise_raw_schedules(df)
     df = df.sort_values("game_date").reset_index(drop=True)
@@ -231,6 +296,9 @@ def build_nfl_features(df: pd.DataFrame) -> pd.DataFrame:
     df["head_to_head"] = calculate_head_to_head(df)
     df = add_rest_days(df)
     df = calculate_elo_ratings(df)
+    df = add_qb_continuity(df)
+    if market_anchored:
+        df = add_market_anchor_features(df)
 
     # ---- One-hot encode categoricals ----
     # Team columns: drop as strings (redundant with Elo, too sparse for reliable learning)
@@ -261,7 +329,9 @@ def build_nfl_features(df: pd.DataFrame) -> pd.DataFrame:
         # Odds API path can't supply them at pick time anyway, so reindex
         # zero-fills them and the live model runs on inputs it never saw.
         # Phase 1's backtest reads them straight off the raw schedule instead.
-        *MARKET_COLS,
+        # The market-anchored model is the exception: it keeps the lines
+        # (ANCHOR_COLS) as its prior and still never sees the prices.
+        *[c for c in MARKET_COLS if not (market_anchored and c in ANCHOR_COLS)],
         # Duplicate rest (pipeline computes home_rest_days/away_rest_days)
         "away_rest", "home_rest",
         # External IDs — pure noise for model

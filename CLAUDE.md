@@ -62,6 +62,7 @@ uv run pytest tests/test_ev.py::test_name -v  # single test
 # Reports / diagnostics
 uv run python scripts/report.py --sport NFL          # ROI + CLV + bankroll report
 uv run python scripts/model_vs_market.py             # game-model vs closing-line diagnostic
+uv run python scripts/game_model_gate.py --start-season 2012 --end-season 2025   # market-anchored game model vs the close (fails: see TODO)
 uv run python scripts/backup_db.py                   # pg_dump to backups/postgres/, prunes >30d
 
 # Lint (scripts/ is linted too)
@@ -124,6 +125,8 @@ Saved to `saved_models/<SPORT>/`: `classifier.json`, `calibrator.joblib`, `home_
 **The `_is_upcoming` tag pattern.** In `picks.py`, upcoming games (from Odds API) are combined with historical games (for Elo warm-up) into one DataFrame. Since `build_features()` sorts by `game_date` internally, upcoming rows are tagged with `_is_upcoming=True` before entering the pipeline, then retrieved by this tag after feature building.
 
 **NBA team name bridging.** `nba_api` uses 3-letter abbreviations (`"BOS"`), the Odds API uses full names (`"Boston Celtics"`). The `NBA_ABBREV_TO_FULL` / `NBA_FULL_TO_ABBREV` dicts in `sports/nba/loader.py` handle mapping. In `picks.py`, a `home_team_odds` metadata column carries the Odds API name for odds matching while `home_team` carries the abbreviation.
+
+**The game model cannot beat the close, even anchored on it.** `models/market_anchored.py` keeps the closing spread/total as the prior and learns only the residual (`build_nfl_features(..., market_anchored=True)` keeps `ANCHOR_COLS`, adds `market_home_prob`/`spread_abs`/QB continuity, never prices). `scripts/game_model_gate.py` walk-forwards it: ridge equals the market (Brier 0.2100 both), XGB is worse, spread ROI negative, totals within noise. It is not wired into picks.py; a game line on a card is a market lean, not a pick.
 
 **NFL backtests use real closing lines** (`sports/nfl/market.py` from nflreadpy schedules); other sports still use synthetic odds from `_generate_market_odds()` (model-centered + Gaussian noise + 4.5% vig, never included as features). Use `--flat-stake` results to judge selection skill — Kelly ROI on small samples is sizing variance.
 
