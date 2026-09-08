@@ -4,7 +4,7 @@ ROI and performance reporting.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 
@@ -17,17 +17,27 @@ def _pct(num: int, denom: int) -> float:
     return (num / denom * 100.0) if denom else 0.0
 
 
+# NFL game-market picks are market leans (paper, stake 0 unless the edge is
+# positive), reported separately from the prop picks that carry the money.
+LEAN_BET_TYPES = ("moneyline", "spread", "total")
+
+
 def get_summary(
     sport: str | None = None,
     since: date | None = None,
     until: date | None = None,
-    bet_type: str | None = None,
+    bet_type: str | list[str] | tuple[str, ...] | None = None,
     season: int | None = None,
+    graded_since: datetime | None = None,
 ) -> dict[str, Any]:
     """
     Aggregate ROI report.
     Returns dict with: total_bets, wins, losses, pushes, win_rate, total_pnl,
                        total_wagered, roi_pct, avg_edge, avg_clv.
+
+    since/until filter on pick_date (the day the pick was made). graded_since
+    filters on graded_at instead — the daily results post uses it, because an
+    NFL pick is made days before its game and graded days after.
     """
     from betting_agent.db.models import Game
     with get_session() as session:
@@ -38,8 +48,13 @@ def get_summary(
             q = q.filter(Pick.pick_date >= since)
         if until:
             q = q.filter(Pick.pick_date <= until)
+        if graded_since is not None:
+            q = q.filter(Pick.graded_at >= graded_since)
         if bet_type:
-            q = q.filter(Pick.bet_type == bet_type)
+            if isinstance(bet_type, str):
+                q = q.filter(Pick.bet_type == bet_type)
+            else:
+                q = q.filter(Pick.bet_type.in_(list(bet_type)))
         if season:
             q = q.filter(Game.season == season)
 
@@ -99,6 +114,7 @@ def get_graded_picks_detail(
     sport: str,
     since: date | None = None,
     until: date | None = None,
+    graded_since: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return per-pick detail for graded picks, joined with Game for team names.
@@ -114,6 +130,8 @@ def get_graded_picks_detail(
             q = q.filter(Pick.pick_date >= since)
         if until:
             q = q.filter(Pick.pick_date <= until)
+        if graded_since is not None:
+            q = q.filter(Pick.graded_at >= graded_since)
 
         rows = q.all()
 
@@ -129,6 +147,9 @@ def get_graded_picks_detail(
             "player": pick.player,
             "market": pick.market,
             "line": pick.line,
+            "clv": pick.clv,
+            "closing_line": pick.closing_line,
+            "on_card": bool(getattr(pick, "on_card", False)),
         }
         for pick, game in rows
     ]
@@ -139,12 +160,14 @@ def get_breakdown_by_bet_type(
     since: date | None = None,
     until: date | None = None,
     season: int | None = None,
+    graded_since: datetime | None = None,
 ) -> list[dict]:
     """Per-bet-type breakdown."""
     bet_types = ["moneyline", "spread", "total", "prop"]
     rows = []
     for bt in bet_types:
-        summary = get_summary(sport=sport, since=since, until=until, bet_type=bt, season=season)
+        summary = get_summary(sport=sport, since=since, until=until, bet_type=bt, season=season,
+                              graded_since=graded_since)
         if "total_bets" in summary and summary["total_bets"] > 0:
             rows.append({"bet_type": bt, **summary})
     return rows

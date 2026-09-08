@@ -83,19 +83,24 @@ class OddsAPIClient:
         sport_key: str,
         markets: list[str] | None = None,
         event_ids: list[str] | None = None,
+        bookmakers: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch odds for a sport.
         markets: list of market keys (h2h, spreads, totals, player_*)
         event_ids: optional list of specific event IDs to fetch
+        bookmakers: optional book keys; replaces the region (≤10 books = 1 region)
         """
         if markets is None:
             markets = STANDARD_MARKETS
         params: dict[str, Any] = {
-            "regions": "us",
             "markets": ",".join(markets),
             "oddsFormat": "american",
         }
+        if bookmakers:
+            params["bookmakers"] = ",".join(bookmakers)
+        else:
+            params["regions"] = "us"
         if event_ids:
             params["eventIds"] = ",".join(event_ids)
 

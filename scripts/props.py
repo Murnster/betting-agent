@@ -34,7 +34,9 @@ import pandas as pd
 from betting_agent.config import settings
 from betting_agent.intelligence.ev import american_to_implied_prob, remove_vig
 from betting_agent.intelligence.kelly import recommended_bet
+from betting_agent.intelligence.game_lean import REFERENCE_BOOK, fetch_game_lines, game_leans
 from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
+from betting_agent.intelligence.slate import Slate, candidates_in_slate, group_events_by_slate, select_card
 from betting_agent.sports.nfl.props import (
     MODELED_MARKETS,
     PROP_EDGE_FLOORS,
@@ -403,6 +405,25 @@ def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
             print(f"{'':<24} > {reason}")
 
 
+def _print_slate(slate: Slate, leans: list[BetCandidate], props: list[BetCandidate],
+                 off_card: int, shadow: bool) -> None:
+    print(f"\n{'=' * 78}\n  {slate.title()}  ({slate.date})\n{'=' * 78}")
+    if leans:
+        print(f"  Game lean{'s' if len(leans) > 1 else ''} (market view vs {REFERENCE_BOOK}, "
+              "NOT a pick — paper only, tracked for CLV):")
+        for c in leans:
+            print(f"    {c.pick_side:<32} {c.odds:>+5} at {c.extra.get('bookmaker', '?'):<10} "
+                  f"fair {c.model_prob:5.1%} vs {c.implied_prob:5.1%}  edge {c.edge:+.1%}")
+    else:
+        print(f"  Game lean: none ({REFERENCE_BOOK} or a bettable book did not quote)")
+    if props:
+        print(f"  Props ({len(props)} on card, {off_card} more saved off-card):")
+        _print_candidates(props, shadow)
+    else:
+        print(f"  Props: none clear the floors ({off_card} saved off-card)" if off_card
+              else "  Props: none clear the floors")
+
+
 def run_closing_capture(window_minutes: int) -> None:
     from betting_agent.accounting.prop_clv import capture_closing_lines_for_upcoming
 
@@ -443,6 +464,9 @@ def main() -> None:
                              "per game we hold picks in; zero when none)")
     parser.add_argument("--window-minutes", type=int, default=90,
                         help="Kickoff window for --closing (default 90)")
+    parser.add_argument("--no-leans", action="store_true",
+                        help="Skip the game-market leans (saves the 3-credit "
+                             "sport-level odds call)")
     parser.add_argument("--agent-mode", type=str,
                         choices=["off", "top", "all"],
                         default=settings.agent_mode if settings.agent_enabled else "off",
@@ -531,7 +555,6 @@ def main() -> None:
 
     if not candidates:
         print("\nNo prop edges clear the threshold today.")
-        return
 
     # LLM validator — shadow by default: verdicts are recorded and shown but
     # do not touch edge, sizing, or the slate.
@@ -552,18 +575,36 @@ def main() -> None:
             logger.warning("Validator failed, continuing without it: %s", exc)
 
     shadow = bool(agent_summary and agent_summary.get("shadow"))
-    _print_candidates(candidates, shadow)
+
+    # ---- Cards: one per slate. Leans = the market's sharpest price vs the
+    # bettable book (paper only, tracked for CLV); props = the picks. ----
+    slates = group_events_by_slate(events)
+    leans: list[BetCandidate] = []
+    if not args.no_leans:
+        try:
+            lines = fetch_game_lines(events, books + [REFERENCE_BOOK])
+            leans = game_leans(lines, books, bankroll)
+        except Exception as exc:
+            logger.warning("Game leans unavailable: %s", exc)
+    cards = []
+    for slate in slates:
+        card_props = select_card(candidates, slate, slate.prop_cap)
+        card_leans = select_card(leans, slate, slate.lean_cap)
+        off_card = len(candidates_in_slate(candidates, slate)) - len(card_props)
+        cards.append((slate, card_leans, card_props, off_card))
+        _print_slate(slate, card_leans, card_props, off_card, shadow)
+
     if agent_summary:
         print(f"\nValidator{' (SHADOW — verdicts recorded, stakes untouched)' if shadow else ''}: "
               f"{agent_summary['validated_games']} games, "
               f"{agent_summary['skipped_games']} skipped, "
               f"${agent_summary['total_cost_usd']:.4f}")
-    print(f"\n{len(candidates)} paper picks. These are NOT bets — Phase 3 "
-          "validates the projections first.")
+    print(f"\n{len(candidates)} paper prop picks ({sum(len(c[2]) for c in cards)} on cards), "
+          f"{len(leans)} game leans. These are NOT bets — Phase 3 validates the projections first.")
 
     if args.save:
-        save_picks_to_db(candidates)
-        print("Saved to picks table (bet_type='prop').")
+        save_picks_to_db(candidates + leans)
+        print("Saved to picks table (props + leans; on_card marks the card).")
         if validation_records:
             try:
                 from betting_agent.intelligence.validator import save_agent_validations_to_db
@@ -577,11 +618,16 @@ def main() -> None:
         try:
             from betting_agent.notifications.discord import (
                 is_discord_configured,
-                send_picks_to_discord,
+                send_slate_to_discord,
             )
             if is_discord_configured("NFL", "PICKS"):
-                logger.info("Sending prop picks to Discord...")
-                send_picks_to_discord(candidates, bankroll, "NFL", agent_summary=agent_summary)
+                for slate, card_leans, card_props, off_card in cards:
+                    if not card_leans and not card_props:
+                        continue
+                    logger.info("Sending %s card to Discord...", slate.label)
+                    send_slate_to_discord(f"{slate.title()} — {slate.date}", card_leans, card_props,
+                                          bankroll, "NFL", agent_summary=agent_summary,
+                                          extra_saved=off_card)
         except Exception as exc:
             logger.warning("Discord notification failed: %s", exc)
 

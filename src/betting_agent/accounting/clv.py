@@ -79,6 +79,9 @@ def update_clv_for_picks() -> int:
             session.query(Pick)
             .filter(Pick.clv.is_(None))
             .filter(Pick.result.isnot(None))
+            # A closing price captured live (props.py --closing) is final —
+            # clv may legitimately be NULL when the line moved.
+            .filter(Pick.closing_odds.is_(None))
             .all()
         )
         for pick in picks:

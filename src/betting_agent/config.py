@@ -128,6 +128,13 @@ class Settings(BaseSettings):
     agent_claude_max_call_usd: float = Field(
         default=0.25, description="Hard per-call spend cap passed to claude --max-budget-usd"
     )
+    agent_claude_timeout: int = Field(
+        default=180,
+        description=(
+            "Seconds to wait for one `claude -p` validator call. A multi-pick game "
+            "with WebSearch runs 40-60s; a kill here loses the spend unrecorded."
+        ),
+    )
     agent_premium_model: str = Field(
         default="gemini/gemini-2.5-pro",
         description="Premium Gemini model for future escalation",

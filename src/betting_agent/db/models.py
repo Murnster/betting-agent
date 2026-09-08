@@ -158,6 +158,7 @@ class Pick(Base):
     result = Column(String(10), nullable=True)          # 'win'|'loss'|'push'|NULL
     closing_odds = Column(Integer, nullable=True)       # for CLV calculation
     closing_line = Column(Float, nullable=True)         # props: line at close (may differ)
+    on_card = Column(Boolean, nullable=False, default=False, server_default="false")  # shown on the slate card
     clv = Column(Float, nullable=True)                  # closing line value
     pnl = Column(Float, nullable=True)                  # profit/loss in dollars
     graded_at = Column(TIMESTAMPTZ, nullable=True)

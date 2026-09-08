@@ -612,3 +612,71 @@ def test_send_alltime_filters_out_empty_sports(mock_send, monkeypatch):
     assert "$980.00" in embeds[1]["description"]
     assert "ROI:** -2.00%" in embeds[1]["description"]
     assert "NBA" in embeds[2]["title"]
+
+
+# ---- NFL results: leans line, LEAN tags, inline all-time recap ----
+
+def _nfl_prop_summary():
+    return {"total_bets": 2, "wins": 1, "losses": 1, "pushes": 0, "win_rate_pct": 50.0,
+            "total_pnl": -1.0, "total_wagered": 20.0, "roi_pct": -5.0, "avg_edge_pct": 20.0,
+            "avg_clv_pct": 3.1}
+
+
+def _nfl_lean_summary():
+    return {"total_bets": 1, "wins": 1, "losses": 0, "pushes": 0, "win_rate_pct": 100.0,
+            "total_pnl": 0.0, "total_wagered": 0.0, "roi_pct": 0.0, "avg_edge_pct": 1.5,
+            "avg_clv_pct": 2.2, "clv_sample": 1, "line_moves_for": 0, "line_moves_against": 0}
+
+
+def test_results_embed_reports_leans_as_paper_not_bets():
+    from betting_agent.notifications.discord import _build_results_embed
+    details = [
+        {"pick_side": "under", "bet_type": "prop", "odds": -110, "result": "win", "pnl": 9.09,
+         "home_team": "SEA", "away_team": "NE", "player": "A.J. Brown",
+         "market": "player_receptions", "line": 4.5},
+        {"pick_side": "Seattle Seahawks", "bet_type": "moneyline", "odds": -170, "result": "win",
+         "pnl": 0.0, "home_team": "SEA", "away_team": "NE", "player": None, "market": None,
+         "line": None},
+    ]
+    embed = _build_results_embed(_nfl_prop_summary(), "NFL", graded_date=date(2026, 9, 11),
+                                 pick_details=details, lean_summary=_nfl_lean_summary())
+    desc = embed["description"]
+    assert "**Leans (paper, not bets):** 1-0-0" in desc
+    assert "**CLV:** +2.20% on 1" in desc
+    assert "LEAN Seattle Seahawks Moneyline" in desc
+    assert "A.J. Brown" in desc and "Record:** 1-1-0" in desc
+
+
+def test_results_embed_without_leans_is_unchanged_shape():
+    from betting_agent.notifications.discord import _build_results_embed
+    embed = _build_results_embed(_nfl_prop_summary(), "NFL", graded_date=date(2026, 9, 11))
+    assert "Leans" not in embed["description"]
+
+
+def test_send_results_appends_inline_alltime_recap(monkeypatch):
+    from betting_agent.notifications import discord as d
+    monkeypatch.setenv("DISCORD_WEBHOOK_NFL_RESULTS", "https://example.com/hook")
+    sent = {}
+    monkeypatch.setattr(d, "_send_webhook", lambda url, payload: sent.setdefault("p", payload) or True)
+    alltime = {**_nfl_prop_summary(), "total_bets": 40, "wins": 25, "losses": 15,
+               "total_pnl": 62.5, "total_wagered": 400.0, "roi_pct": 15.6, "win_rate_pct": 62.5}
+    ok = d.send_results_to_discord(
+        _nfl_prop_summary(), "NFL", breakdown=None, graded_date=date(2026, 9, 11),
+        pick_details=[], lean_summary=_nfl_lean_summary(), alltime_summary=alltime,
+        alltime_lean_summary=_nfl_lean_summary(), starting_bankroll=1000.0,
+    )
+    assert ok
+    titles = [e["title"] for e in sent["p"]["embeds"]]
+    assert titles == ["Results — NFL", "All-time — NFL"]
+    recap = sent["p"]["embeds"][1]["description"]
+    assert "25-15-0" in recap and "$1,000.00 → $1,062.50" in recap
+    assert "**Leans all-time (paper, not bets):** 1-0-0" in recap
+
+
+def test_send_results_without_recap_keeps_single_embed(monkeypatch):
+    from betting_agent.notifications import discord as d
+    monkeypatch.setenv("DISCORD_WEBHOOK_NFL_RESULTS", "https://example.com/hook")
+    sent = {}
+    monkeypatch.setattr(d, "_send_webhook", lambda url, payload: sent.setdefault("p", payload) or True)
+    d.send_results_to_discord(_nfl_prop_summary(), "NFL", graded_date=date(2026, 9, 11))
+    assert [e["title"] for e in sent["p"]["embeds"]] == ["Results — NFL"]

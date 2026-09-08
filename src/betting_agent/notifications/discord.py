@@ -203,17 +203,91 @@ def send_picks_to_discord(
     return all_ok
 
 
+def _build_lean_embed(pick: BetCandidate, rank: int) -> dict:
+    """A game-market lean: labelled as such, never as a pick."""
+    label = _pick_label(pick)
+    matchup = f"{pick.away_team} @ {pick.home_team}"
+    ref = (pick.extra or {}).get("reference", "reference")
+    book = (pick.extra or {}).get("bookmaker", "")
+    desc = (
+        f"{matchup}\n\n"
+        f"**Odds:** `{pick.odds:+d}` at {book}  |  **Edge vs {ref}:** `{pick.edge:+.1%}`\n"
+        f"**Fair ({ref}):** `{pick.model_prob:.1%}`  vs  **{book}:** `{pick.implied_prob:.1%}`\n"
+        f"_Market lean, not a pick — no model beats the NFL close. Saved on paper "
+        f"to measure whether early numbers beat closing ones (CLV)._"
+    )
+    return {"title": f"LEAN #{rank}  {label}", "description": desc, "color": COLOR_GREY}
+
+
+def send_slate_to_discord(
+    title: str, leans: list[BetCandidate], props: list[BetCandidate], bankroll: float,
+    sport: str = "NFL", agent_summary: dict | None = None, extra_saved: int = 0,
+) -> bool:
+    """
+    One card per slate: header, the game lean(s), then the prop picks.
+    `extra_saved` = props that cleared the floors but did not make the card.
+    """
+    url = _get_webhook_url(sport, "PICKS")
+    if not url:
+        logger.debug("Discord not configured for %s picks, skipping", sport)
+        return False
+    if not leans and not props:
+        return True
+
+    from betting_agent.sports.registry import get_sport_config
+    star_thresholds = get_sport_config(sport).star_thresholds
+
+    header = _build_summary_embed(props, bankroll, sport, agent_summary=agent_summary) if props else {
+        "description": f"{date.today()}\n\nNo prop clears the floors on this slate.", "color": COLOR_BLUE,
+    }
+    header["title"] = f"{SPORT_EMOJI.get(sport.upper(), '')} {title}"
+    if extra_saved:
+        header["description"] += f"\n_{extra_saved} more paper pick(s) saved off-card._"
+    embeds = [header]
+    for rank, lean in enumerate(sorted(leans, key=lambda c: c.edge, reverse=True), 1):
+        embeds.append(_build_lean_embed(lean, rank))
+    for rank, pick in enumerate(sorted(props, key=lambda c: c.edge, reverse=True), 1):
+        embeds.append(_build_pick_embed(pick, rank, star_thresholds,
+                                        analysis=(pick.extra or {}).get("analysis")))
+
+    all_ok = True
+    for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
+        if not _send_webhook(url, {"embeds": embeds[i: i + MAX_EMBEDS_PER_MESSAGE]}):
+            all_ok = False
+    return all_ok
+
+
+LEAN_BET_TYPES = ("moneyline", "spread", "total")
+
+
+def _lean_line(lean_summary: dict[str, Any] | None, label: str = "Leans") -> str | None:
+    """One line for the market leans: record, CLV, line moves — never P&L as a pick."""
+    if not lean_summary or "total_bets" not in lean_summary:
+        return None
+    text = (f"**{label} (paper, not bets):** {lean_summary.get('wins', 0)}-"
+            f"{lean_summary.get('losses', 0)}-{lean_summary.get('pushes', 0)}")
+    if lean_summary.get("avg_clv_pct") is not None:
+        text += (f"  |  **CLV:** {lean_summary['avg_clv_pct']:+.2f}% "
+                 f"on {lean_summary.get('clv_sample', 0)}")
+    mf, ma = lean_summary.get("line_moves_for", 0), lean_summary.get("line_moves_against", 0)
+    if mf or ma:
+        text += f"  |  **Line moves:** {mf} for / {ma} against"
+    return text
+
+
 def _build_results_embed(
     summary: dict[str, Any],
     sport: str,
     graded_date: date | None = None,
     pick_details: list[dict] | None = None,
+    lean_summary: dict[str, Any] | None = None,
 ) -> dict:
     """Build a Discord embed for grading results."""
     if "message" in summary:
+        lean = _lean_line(lean_summary)
         return {
             "title": f"Results \u2014 {sport}",
-            "description": summary["message"],
+            "description": summary["message"] + (f"\n{lean}" if lean else ""),
             "color": COLOR_GREY,
         }
 
@@ -240,6 +314,9 @@ def _build_results_embed(
 
     if summary.get("avg_clv_pct") is not None:
         lines[-1] += f"  |  **Avg CLV:** {summary['avg_clv_pct']:+.2f}%"
+    lean = _lean_line(lean_summary)
+    if lean:
+        lines.append(lean)
 
     if pick_details:
         lines.append("")
@@ -256,6 +333,8 @@ def _build_results_embed(
                 line_str = f" {line_val:g}" if line_val is not None else ""
                 bet_desc = (f"{d['player']} {market} "
                             f"{d['pick_side']}{line_str}")
+            elif lean_summary is not None and d.get("bet_type") in LEAN_BET_TYPES:
+                bet_desc = f"LEAN {d['pick_side']} {d['bet_type'].title()}"
             else:
                 bet_desc = f"{d['pick_side']} {d['bet_type'].title()}"
             lines.append(
@@ -297,9 +376,17 @@ def send_results_to_discord(
     breakdown: list[dict] | None = None,
     graded_date: date | None = None,
     pick_details: list[dict] | None = None,
+    lean_summary: dict[str, Any] | None = None,
+    alltime_summary: dict[str, Any] | None = None,
+    alltime_lean_summary: dict[str, Any] | None = None,
+    starting_bankroll: float | None = None,
 ) -> bool:
     """
     Send grading results to the Discord results channel for the given sport.
+
+    lean_summary adds a paper-leans line (record, CLV) under the picks;
+    alltime_summary appends an all-time recap embed so the results channel
+    carries the running record without a separate all-time channel.
 
     Returns True if sent successfully, False otherwise.
     """
@@ -312,9 +399,16 @@ def send_results_to_discord(
         logger.debug("No graded picks for %s, skipping Discord", sport)
         return True
 
-    embeds = [_build_results_embed(summary, sport, graded_date, pick_details=pick_details)]
+    embeds = [_build_results_embed(summary, sport, graded_date, pick_details=pick_details,
+                                   lean_summary=lean_summary)]
     if breakdown:
         embeds.append(_build_breakdown_embed(breakdown, sport))
+    if alltime_summary is not None and starting_bankroll is not None:
+        recap = _build_alltime_sport_embed(alltime_summary, f"All-time \u2014 {sport}", starting_bankroll)
+        lean = _lean_line(alltime_lean_summary, label="Leans all-time")
+        if lean:
+            recap["description"] += f"\n{lean}"
+        embeds.append(recap)
 
     payload: dict[str, Any] = {"embeds": embeds}
     return _send_webhook(url, payload)

@@ -359,6 +359,18 @@ applied):
   `AGENT_CLAUDE_MAX_TURNS=2` to bound searches. Decide after seeing a
   week of verdict quality; until then the cap stays and a killed call is
   simply recorded as SKIPPED with its cost.
+- [x] **Slate cards + game leans (2026-09-07).** User's vision: per slate, a
+  game line plus 1-2 props for primetime, ~3 + ~3 for Sunday windows. Props
+  are the picks (`intelligence/slate.py` caps; `Pick.on_card`, migration
+  `e1f2a3b4c5d6`). Game markets cannot be picks (see the closing-line
+  section), so the game line is a **lean**: Pinnacle fair price → bettable
+  book's line → best-edge side (`intelligence/game_lean.py`), labelled LEAN,
+  saved on paper, closing line captured by `--closing`.
+- [ ] **Lean CLV experiment — decide after the 2026 regular season.** Query
+  `picks where bet_type in ('moneyline','spread','total')`: avg `clv` where
+  the line held, line moves for/against otherwise, by `edge` bucket. Promote
+  leans to picks only if CLV is positive with a usable sample; otherwise
+  keep them as labelled leans (or drop them from the card).
 - [ ] **Cron for the props loop — deferred by the user ("we'll do this
   later"); run by hand until then.** Proposed schedule (machine is
   America/Halifax, ADT = ET+1):

@@ -124,6 +124,64 @@ def capture_prop_closing_lines(events: list[dict], picks: list,
     return updated
 
 
+def _game_closing_quote(event: dict, pick, book_order: list[str] | None) -> tuple[float | None, int] | None:
+    """
+    (closing line, closing price) for a moneyline/spread/total pick from a
+    sport-level odds response, read at the first book in `book_order` that
+    quotes the game (the same rule the lean was priced with).
+    """
+    from betting_agent.sports.teams import same_team
+
+    books = books_in_preference(event, book_order)
+    if not books:
+        return None
+    book = books[0]
+    home, away = event.get("home_team", ""), event.get("away_team", "")
+    side = (pick.pick_side or "").strip()
+    for mkt in book.get("markets", []):
+        key = mkt.get("key")
+        if pick.bet_type == "moneyline" and key == "h2h":
+            for o in mkt.get("outcomes", []):
+                if same_team(pick.sport, side, o.get("name", "")) and o.get("price") is not None:
+                    return None, int(o["price"])
+        elif pick.bet_type == "spread" and key == "spreads":
+            team = side.rsplit(" ", 1)[0]
+            for o in mkt.get("outcomes", []):
+                if same_team(pick.sport, team, o.get("name", "")) and o.get("price") is not None:
+                    return float(o.get("point")), int(o["price"])
+        elif pick.bet_type == "total" and key == "totals":
+            want = "Over" if side.lower().startswith("over") else "Under"
+            for o in mkt.get("outcomes", []):
+                if o.get("name") == want and o.get("price") is not None:
+                    return float(o.get("point")), int(o["price"])
+    _ = (home, away)
+    return None
+
+
+def capture_game_closing_lines(events: list[dict], picks: list,
+                               book_order: list[str] | None = None) -> int:
+    """Store closing line/price (and clv when the line held) on moneyline,
+    spread and total picks whose game appears in `events`."""
+    by_event = {e.get("id"): e for e in events if e.get("id")}
+    updated = 0
+    for pick in picks:
+        game = getattr(pick, "game", None)
+        event = by_event.get(getattr(game, "external_id", None))
+        if event is None:
+            continue
+        quote = _game_closing_quote(event, pick, book_order)
+        if quote is None:
+            logger.info("No closing quote for %s %s", pick.bet_type, pick.pick_side)
+            continue
+        closing_line, closing_price = quote
+        pick.closing_line = closing_line
+        pick.closing_odds = closing_price
+        line_held = pick.line is None or closing_line is None or float(closing_line) == float(pick.line)
+        pick.clv = calculate_clv(int(pick.odds), closing_price) if line_held else None
+        updated += 1
+    return updated
+
+
 def capture_closing_lines_for_upcoming(
     window_minutes: int = 90,
     bookmakers: list[str] | None = None,
@@ -147,25 +205,38 @@ def capture_closing_lines_for_upcoming(
         return 0
     event_ids = [e["id"] for e in upcoming if e.get("id")]
 
+    updated = 0
     with get_session() as session:
-        picks = (
+        open_picks = (
             session.query(Pick)
             .join(Game)
-            .filter(Pick.bet_type == "prop", Pick.sport == "NFL")
+            .filter(Pick.sport == "NFL")
             .filter(Pick.result.is_(None), Pick.closing_odds.is_(None))
             .filter(Game.external_id.in_(event_ids))
             .all()
         )
-        if not picks:
-            logger.info("No open prop picks in the next %d minutes — nothing fetched",
-                        window_minutes)
+        props = [p for p in open_picks if p.bet_type == "prop"]
+        games = [p for p in open_picks if p.bet_type in ("moneyline", "spread", "total")]
+        if not open_picks:
+            logger.info("No open picks in the next %d minutes — nothing fetched", window_minutes)
             return 0
-        held = {p.game.external_id for p in picks}
-        targets = [e for e in upcoming if e.get("id") in held]
-        markets = sorted({p.market for p in picks if p.market})
-        logger.info("Capturing closing lines for %d picks across %d games (%d credits)",
-                    len(picks), len(targets), len(targets) * len(markets))
-        odds = fetch_prop_odds(sport_key, markets=markets, bookmakers=bookmakers, events=targets)
-        updated = capture_prop_closing_lines(odds, picks, bookmakers)
-    logger.info("Stored closing lines for %d prop picks", updated)
+        if props:
+            held = {p.game.external_id for p in props}
+            targets = [e for e in upcoming if e.get("id") in held]
+            markets = sorted({p.market for p in props if p.market})
+            logger.info("Capturing closing lines for %d prop picks across %d games (%d credits)",
+                        len(props), len(targets), len(targets) * len(markets))
+            odds = fetch_prop_odds(sport_key, markets=markets, bookmakers=bookmakers, events=targets)
+            updated += capture_prop_closing_lines(odds, props, bookmakers)
+        if games:
+            from betting_agent.intelligence.game_lean import REFERENCE_BOOK, fetch_game_lines
+
+            held = {p.game.external_id for p in games}
+            targets = [e for e in upcoming if e.get("id") in held]
+            books = list(bookmakers or []) + [REFERENCE_BOOK]
+            logger.info("Capturing closing lines for %d game leans across %d games (3 credits)",
+                        len(games), len(targets))
+            odds = fetch_game_lines(targets, books, sport_key=sport_key)
+            updated += capture_game_closing_lines(odds, games, bookmakers)
+    logger.info("Stored closing lines for %d picks", updated)
     return updated

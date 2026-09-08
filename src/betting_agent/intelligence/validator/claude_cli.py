@@ -106,7 +106,7 @@ class ClaudeCliValidator:
             proc = subprocess.run(
                 self._command(has_props), input=user_message(payload),
                 capture_output=True, text=True, cwd=tempfile.gettempdir(),
-                timeout=settings.agent_request_timeout * 3, env=env,
+                timeout=settings.agent_claude_timeout, env=env,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             logger.warning("claude validator failed to run for %s: %s", payload.game_id, exc)

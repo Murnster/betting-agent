@@ -491,6 +491,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 row.kelly_fraction = c.kelly_fraction
                 row.recommended_bet = c.recommended_bet
                 row.bankroll_at_pick = c.bankroll_at_pick
+                row.on_card = bool((c.extra or {}).get("card"))
                 updated += 1
                 continue
 
@@ -510,6 +511,7 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
                 kelly_fraction=c.kelly_fraction,
                 recommended_bet=c.recommended_bet,
                 bankroll_at_pick=c.bankroll_at_pick,
+                on_card=bool((c.extra or {}).get("card")),
             )
             session.add(pick)
             existing[key] = pick
