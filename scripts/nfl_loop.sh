@@ -56,12 +56,18 @@ case "${1:-}" in
     cat <<EOF
 # ---- betting-agent NFL props loop (docs/NFL_SETUP.md) ----
 SHELL=/bin/bash
-# Sunday (and Saturday in Dec/Jan): the card at 12:45 local, before the 1pm ET window
-45 12 * * 0,6   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
-# Thursday + Monday primetime: the card at 19:00 local
-0  19 * * 1,4   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
-# Closing prices, hourly through every game-day window (free when nothing is due)
-0  12-23 * * 0,1,4,6  $PROJECT_ROOT/scripts/nfl_loop.sh closing >> $LOG_DIR/nfl_closing.log 2>&1
+# One card run per day covers every slate that day (props.py --today cards each
+# slate in one pass and skips games already kicked off), so the only thing that
+# matters is running before the day's FIRST kickoff.
+# Sun/Fri/Sat: the card at 12:45 local, before the 1pm ET window (Christmas
+# Friday and the December Saturday doubleheaders start in the afternoon).
+45 12 * * 0,5,6   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Mon/Tue/Wed/Thu primetime: the card at 19:00 local. Wednesday is not a typo —
+# the 2026 season opens on one (Sep 9 NE@SEA) and week 12 has another.
+0  19 * * 1,2,3,4 $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Closing prices, hourly, every day (the events call is free and nothing is
+# fetched unless a held pick kicks off inside the window)
+0  9-23 * * *     $PROJECT_ROOT/scripts/nfl_loop.sh closing >> $LOG_DIR/nfl_closing.log 2>&1
 # Grade every morning (stats for a Sunday land on nflverse Monday/Tuesday; re-runs are free)
 0  9  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh grade   >> $LOG_DIR/nfl_grade.log 2>&1
 # Nightly database dump

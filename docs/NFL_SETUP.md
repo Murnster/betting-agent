@@ -9,12 +9,18 @@ What a game day looks like once this is installed:
 
 | When (local) | Job | What it does | Cost |
 | --- | --- | --- | --- |
-| 12:45 Sun/Sat, 19:00 Thu/Mon | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds the card (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
-| Hourly 12:00–23:00 on game days | `nfl_loop.sh closing` | Closing price/line on held picks kicking off in the next 90 min → CLV | credits only for games with held picks |
+| 12:45 Fri/Sat/Sun, 19:00 Mon-Thu | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds the card (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
+| Hourly 09:00–23:00 daily | `nfl_loop.sh closing` | Closing price/line on held picks kicking off in the next 90 min → CLV | credits only for games with held picks |
 | 09:00 daily | `nfl_loop.sh grade` | Finalizes games from nflverse, grades props, posts results + all-time recap | free |
 | 03:15 daily | `nfl_loop.sh backup` | `pg_dump` to `backups/postgres/`, prunes >30 days | free |
 
-Off-days cost nothing: `card` exits before any paid call when no game kicks off today.
+Off-days cost nothing: `card` exits before any paid call when no game kicks off today,
+and `closing` spends only when a held pick kicks off inside its window. That is why the
+schedule can be blunt about days — one `card` run per day covers every slate that day
+(`props.py --today` cards each slate in one pass and skips games already kicked off), so
+the only thing that has to be right is running before the day's *first* kickoff. The
+2026 season has games on all seven weekdays: a Wednesday opener (Sep 9) and a second
+Wednesday in week 12, Friday games on Nov 27 and Christmas, December Saturdays.
 
 ---
 
@@ -127,7 +133,8 @@ DISCORD_WEBHOOK_NFL_PICKS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_NFL_RESULTS=https://discord.com/api/webhooks/...
 
 # --- books: The Odds API has NO bet365 player props; DraftKings/FanDuel price the card ---
-# PREFERRED_BOOKMAKERS=bet365                 (default)
+# PREFERRED_BOOKMAKERS=                      (default empty; the props path
+#                                             falls back to bet365 on its own)
 # PROP_FALLBACK_BOOKMAKERS=draftkings,fanduel (default)
 
 # --- paper bankrolls ---
@@ -217,22 +224,44 @@ means no picks for that slate.
 
 ---
 
-## 7. Odds API credit budget (500/month free tier)
+## 7. Odds API credit budget (500/month per key)
 
 Per game the card costs **6 credits**: receptions + receiving yards (2), anytime TD (1),
 three alternate boards (3). The game lean is 3 credits per run regardless of games.
-`--closing` re-fetches the markets for each game with held picks (6 per game, once).
+`--closing` re-fetches the markets for each game with held picks (6 per game, once —
+`capture_closing_lines_for_upcoming` filters on `Pick.closing_odds IS NULL`, so the
+hourly job never re-bills a game it already captured).
 
-| Week shape | Credits |
-| --- | --- |
-| TNF + 6 Sunday games (`NFL_SUGGEST=6`) + MNF, cards only | 8 × 6 + 3 × 3 = 57 |
-| + closing captures on those 8 games | + 48 → ~105 |
-| Four such weeks | ~420 |
+**One free key does not cover the season.** Costed against the real 2026 schedule at
+`NFL_SUGGEST=6` with every section on, cards plus one closing capture per priced game:
 
-That fits the free tier with a little room. Every Sunday game (14) would not. Levers, in
-order of what you give up least: lower `NFL_SUGGEST`; `LADDER_MARKETS` without
-`player_receptions` (-1/game); `--no-td` (-1/game) ; `--no-leans` (-3/run). The log line
-`x-requests-remaining` after each fetch shows what is left this month.
+| Month | Games | Priced | Credits |
+| --- | --- | --- | --- |
+| Sep 2026 | 48 | 25 | 330 |
+| Oct 2026 | 60 | 33 | 435 |
+| Nov 2026 | 71 | 43 | **564** |
+| Dec 2026 | 62 | 38 | **501** |
+| Jan 2027 | 31 | 13 | 165 |
+
+November and December are over a single key's 500. When a key runs out the API answers
+401 and the card job dies with `No prop odds returned` — no Discord post, and nothing
+tells you except the absence of a card.
+
+**The fix is more keys, not a thinner card.** Set `ODDS_API_KEY_2` and `ODDS_API_KEY_3`
+to additional Odds API accounts; `OddsAPIClient` walks them in order, rotating on a
+quota 401/429 (and on a revoked key), and retires a key the moment its
+`x-requests-remaining` header hits zero so the next call does not waste a round trip.
+Three free keys is a 1500/month pool against a 564-credit peak. Asking an exhausted key
+costs nothing, so the fallback itself is free. Each cron run is a fresh process and
+starts again at key 1: expect one harmless 401 per run late in a month.
+
+Every fetch logs `Odds API key N of M: X credits remaining` at INFO, so
+`grep 'credits remaining' logs/nfl_card.log | tail` is the monthly health check.
+
+If you would rather run on one key, the levers in order of what you give up least are:
+lower `NFL_SUGGEST` (4 keeps the November peak at 444); `LADDER_MARKETS` without
+`player_receptions` (-1/game, and the diagnostic rates receptions ladders worst);
+`--no-td` (-1/game); `--no-leans` (-3/run).
 
 ---
 

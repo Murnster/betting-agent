@@ -6,6 +6,7 @@ Fetches moneyline, spread, totals and player props for any sport/market.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +19,11 @@ from betting_agent.db.session import get_session
 from betting_agent.sports.teams import canonical_team, same_team
 
 logger = logging.getLogger(__name__)
+
+
+def _redact(text: str) -> str:
+    """Strip apiKey values out of anything headed for the logs."""
+    return re.sub(r"([?&]apiKey=)[^&\s]+", r"\1***", text)
 
 # Supported markets per sport
 STANDARD_MARKETS = ["h2h", "spreads", "totals"]
@@ -45,33 +51,120 @@ def american_to_float(price: Any) -> int | None:
         return None
 
 
+# Which configured key the process is currently spending. Each cron run is a
+# fresh process, so this only saves repeat rotations within one run; the cost
+# of starting over is a single 401, which does not consume a credit.
+_key_index = 0
+
+
+def _reset_key_rotation() -> None:
+    """Start again from the primary key (tests, and anything long-running)."""
+    global _key_index
+    _key_index = 0
+
+
+def key_failure_reason(resp: requests.Response) -> str | None:
+    """
+    Why this key cannot serve the request, or None if the response is not the
+    key's fault. The Odds API answers an exhausted key with 401 and a message
+    naming the usage quota, and 429 is its documented rate/quota status; a 401
+    for any other reason means the key is revoked or mistyped. Both are worth
+    rotating past — the next key may still work, and asking a dead key costs
+    no credits — but they are logged differently so a config mistake does not
+    hide behind an expected end-of-month rotation.
+    """
+    if resp.status_code == 429:
+        return "quota"
+    if resp.status_code != 401:
+        return None
+    try:
+        body = resp.text.lower()
+    except Exception:  # pragma: no cover - requests always gives text
+        return "rejected"
+    if "quota" in body or "usage limit" in body:
+        return "quota"
+    return "rejected"
+
+
 class OddsAPIClient:
     def __init__(self):
-        self.api_key = settings.odds_api_key
+        self.api_keys = settings.odds_api_keys
         self.base_url = settings.odds_api_base
 
+    @property
+    def api_key(self) -> str:
+        """The key currently being spent (empty when none is configured)."""
+        if not self.api_keys:
+            return ""
+        return self.api_keys[min(_key_index, len(self.api_keys) - 1)]
+
     def _get(self, path: str, params: dict) -> list[dict] | None:
-        if not self.api_key:
+        global _key_index
+        if not self.api_keys:
             logger.warning("ODDS_API_KEY not set — skipping Odds API call")
             return None
         url = f"{self.base_url}/{path}"
-        params["apiKey"] = self.api_key
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            remaining = resp.headers.get("x-requests-remaining")
-            if remaining:
-                logger.debug("Odds API requests remaining: %s", remaining)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 422:
+
+        # Walk the remaining keys. A key that is out of credits costs nothing
+        # to ask, so falling through the exhausted ones is free.
+        while _key_index < len(self.api_keys):
+            params["apiKey"] = self.api_keys[_key_index]
+            n = _key_index + 1
+            try:
+                resp = requests.get(url, params=params, timeout=15)
+            except requests.exceptions.RequestException as exc:
+                logger.error("Odds API request error: %s", _redact(str(exc)))
+                return None
+
+            if resp.status_code == 422:
                 logger.warning("Odds API 422 for %s — market not available", path)
                 return []
-            logger.error("Odds API HTTP error: %s", exc)
-            return None
-        except requests.exceptions.RequestException as exc:
-            logger.error("Odds API request error: %s", exc)
-            return None
+
+            reason = key_failure_reason(resp)
+            if reason is not None:
+                detail = ("is out of credits" if reason == "quota"
+                          else "was rejected (revoked or mistyped)")
+                if _key_index + 1 < len(self.api_keys):
+                    log = logger.warning if reason == "quota" else logger.error
+                    log("Odds API key %d of %d %s (HTTP %d) — falling back to key %d",
+                        n, len(self.api_keys), detail, resp.status_code, n + 1)
+                    _key_index += 1
+                    continue
+                logger.error(
+                    "Odds API key %d of %d %s (HTTP %d) and no fallback key is left",
+                    n, len(self.api_keys), detail, resp.status_code,
+                )
+                return None
+
+            if not resp.ok:
+                logger.error("Odds API HTTP error: %s", _redact(str(resp.status_code)))
+                return None
+
+            remaining = resp.headers.get("x-requests-remaining")
+            if remaining is not None:
+                # INFO, not DEBUG: this is the only visibility into the
+                # monthly pool an unattended box has (docs/NFL_SETUP.md §7).
+                logger.info("Odds API key %d of %d: %s credits remaining",
+                            n, len(self.api_keys), remaining)
+                # Retire a key the moment it hits zero, so the next call starts
+                # on the fallback instead of spending a round trip on a 401.
+                try:
+                    if float(remaining) <= 0 and _key_index + 1 < len(self.api_keys):
+                        logger.warning(
+                            "Odds API key %d of %d hit zero credits — next call uses key %d",
+                            n, len(self.api_keys), n + 1,
+                        )
+                        _key_index += 1
+                except ValueError:
+                    pass
+            try:
+                return resp.json()
+            except ValueError:
+                logger.error("Odds API returned non-JSON for %s", path)
+                return None
+
+        logger.error("Every configured Odds API key is exhausted or rejected")
+        return None
 
     def fetch_events(self, sport_key: str) -> list[dict]:
         """Fetch all upcoming events for a sport (no odds, cheap call)."""

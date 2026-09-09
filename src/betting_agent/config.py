@@ -29,6 +29,11 @@ class Settings(BaseSettings):
 
     # The Odds API
     odds_api_key: str = Field(default="", description="The Odds API key")
+    # Each key carries its own monthly quota (500 on the free tier). The NFL
+    # props loop's November peak is ~564 credits, so one key cannot cover the
+    # season; the client rotates to the next key when one is exhausted.
+    odds_api_key_2: str = Field(default="", description="Fallback Odds API key")
+    odds_api_key_3: str = Field(default="", description="Second fallback Odds API key")
     odds_api_base: str = Field(
         default="https://api.the-odds-api.com/v4/sports",
         description="The Odds API base URL",
@@ -198,6 +203,21 @@ class Settings(BaseSettings):
 
     # Paths
     saved_models_dir: str = Field(default="saved_models", description="Directory for saved models")
+
+    @property
+    def odds_api_keys(self) -> list[str]:
+        """
+        Every configured Odds API key, primary first, blanks and duplicates
+        dropped. `OddsAPIClient` walks this list when a key's monthly quota
+        runs out, so the loop keeps running instead of dying with
+        "No prop odds returned" partway through November.
+        """
+        keys: list[str] = []
+        for key in (self.odds_api_key, self.odds_api_key_2, self.odds_api_key_3):
+            key = (key or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+        return keys
 
     @property
     def preferred_bookmaker_list(self) -> list[str]:
