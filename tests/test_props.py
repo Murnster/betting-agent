@@ -213,3 +213,61 @@ class TestPnlUsesActualBet:
         pick = Pick(recommended_bet=100.0, odds=-110)
         assert _calculate_pnl(pick, "win") == pytest.approx(100.0 * 100 / 110)
         assert _calculate_pnl(pick, "push") == 0.0
+
+
+class TestCalibratorDoesNotExtrapolate:
+    """
+    The isotonic calibrator is fit on lines near the projection, so a real
+    book line far from it produces a raw P(over) outside the fitted range.
+    sklearn snaps that to an end bin, and end bins collapse to exactly 0 or 1
+    — the 2026 week-1 rehearsal put three receiving-yards picks at 99.0% that
+    way (Holani/Tuten under 11.5, Robinson over 11.5).
+    """
+
+    @staticmethod
+    def _collapsed_calibrator():
+        from sklearn.isotonic import IsotonicRegression
+
+        # Fitted range [0.15, 0.70]; the lowest bin is all misses (-> 0.0) and
+        # the highest is all hits (-> 1.0), the interior is sensible.
+        raw = [0.15, 0.16, 0.30, 0.30, 0.30, 0.50, 0.50, 0.50, 0.69, 0.70]
+        hit = [0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0]
+        return IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(raw, hit)
+
+    def test_out_of_range_uses_the_raw_tail(self):
+        from betting_agent.sports.nfl.props import calibrated_prob
+
+        cal = self._collapsed_calibrator()
+        assert calibrated_prob(cal, 0.09) == pytest.approx(0.09)   # below X_min_
+        assert calibrated_prob(cal, 0.78) == pytest.approx(0.78)   # above X_max_
+
+    def test_collapsed_end_bin_uses_the_raw_tail(self):
+        from betting_agent.sports.nfl.props import calibrated_prob
+
+        cal = self._collapsed_calibrator()
+        assert float(cal.predict([0.155])[0]) == 0.0      # in range, but the 0.0 bin
+        assert calibrated_prob(cal, 0.155) == pytest.approx(0.155)
+        assert float(cal.predict([0.695])[0]) == 1.0
+        assert calibrated_prob(cal, 0.695) == pytest.approx(0.695)
+
+    def test_interior_still_calibrates(self):
+        from betting_agent.sports.nfl.props import calibrated_prob
+
+        cal = self._collapsed_calibrator()
+        assert calibrated_prob(cal, 0.50) == pytest.approx(float(cal.predict([0.50])[0]))
+        assert 0.0 < calibrated_prob(cal, 0.50) < 1.0
+
+    def test_projection_no_longer_claims_99_on_a_far_line(self):
+        from scipy import stats as sps
+
+        from betting_agent.sports.nfl.props import Projection
+
+        cal = self._collapsed_calibrator()
+        # A 30-yard projection against an 11.5 line: raw P(over) ~0.8, which
+        # the collapsed calibrator used to turn into 0.99.
+        dist = sps.lognorm(0.6, scale=30.0)
+        proj = Projection(player="x", market="player_reception_yds", mean=30.0, games=10,
+                          _dist=dist, _calibrator=cal)
+        p = proj.prob_over(11.5)
+        assert p == pytest.approx(float(dist.sf(11.5)))
+        assert p < 0.99

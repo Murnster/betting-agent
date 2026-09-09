@@ -530,6 +530,31 @@ class _ShiftedDist:
         return self._dist.ppf(q) - self._shift
 
 
+def calibrated_prob(calibrator, raw: float) -> float:
+    """
+    Apply an isotonic raw-P(over) → empirical map only where it is trustworthy.
+
+    The calibrators are fit on lines near the projection (pseudo_lines and the
+    book-proxy median), so their fitted range is narrow — receiving yards sees
+    raw P(over) in roughly [0.11, 0.73]. sklearn snaps anything outside that
+    range to the end bins, and an isotonic end bin is exactly 0 or 1 whenever
+    its few most extreme samples all missed or all hit. A real book line far
+    from the projection (11.5 on a player the model has at 30, or at 6) lands
+    there, and the model then claimed 99% — a bigger Kelly stake precisely
+    where it disagrees with the market hardest. Outside the fitted range, or
+    in a collapsed end bin, the distribution's own tail is the honest number.
+    """
+    raw = float(raw)
+    lo = getattr(calibrator, "X_min_", None)
+    hi = getattr(calibrator, "X_max_", None)
+    if lo is not None and hi is not None and not (lo <= raw <= hi):
+        return raw
+    cal = float(calibrator.predict([raw])[0])
+    if cal <= 0.0 or cal >= 1.0:
+        return raw
+    return cal
+
+
 @dataclass
 class Projection:
     player: str
@@ -554,7 +579,7 @@ class Projection:
     def prob_over(self, line: float) -> float:
         p = self._raw_over(line)
         if self._calibrator is not None:
-            p = float(self._calibrator.predict([p])[0])
+            p = calibrated_prob(self._calibrator, p)
         return float(np.clip(p, 0.01, 0.99))
 
     def prob_under(self, line: float) -> float:
@@ -570,7 +595,7 @@ class Projection:
         p = self._raw_over(line)
         cal = self._tail_calibrator if self._tail_calibrator is not None else self._calibrator
         if cal is not None:
-            p = float(cal.predict([p])[0])
+            p = calibrated_prob(cal, p)
         return float(np.clip(p, 0.01, 0.99))
 
 

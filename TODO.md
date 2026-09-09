@@ -468,3 +468,23 @@ receiving markets have a record.
 validator paragraph in CLAUDE.md). The deterministic injury check stays
 upstream of it; the LLM is for what the data can't express (new OC, holdout,
 QB change mid-week), not for re-deriving the model.
+
+- [ ] **Receiving-prop edge cap — decide once the 2026 picks are graded (found
+      2026-09-08, week-1 rehearsal).** Three of the twelve main-card props sat
+      at model 99.0%: Holani and Tuten under 11.5 receiving yards, Robinson
+      over 11.5. Root cause was mechanical and is fixed (`calibrated_prob()` —
+      the isotonic calibrator is fit on lines near the projection, raw P(over)
+      in ~[0.11, 0.73] for yards, and outside that range or in a collapsed
+      0/1 end bin it now returns the distribution's own tail instead of 99%).
+      The policy question remains: all three were the book's lowest quotable
+      line on a player the model has at half or double the book's number
+      (Robinson's 30-yard mean is his Rams role; DraftKings sees a ~12-yard
+      WR4 in San Francisco). Fixed, they still claim +19% to +40% and clear
+      the 15% floor. The TD diagnostic found realised probability *falls*
+      when the model disagrees with the market that hard (hence the 15%
+      TD cap); `props_diagnostic.py` cannot measure this for receiving
+      markets because it prices against `book_proxy_line()`, which is in
+      range by construction — the cliff only exists against real lines.
+      Options: a `PROP_EDGE_CAPS` entry for `player_reception_yds` (~30%),
+      or split graded results by claimed-edge band (`edge > 0.30`) after
+      4–6 weeks and let the season decide. User's call.
