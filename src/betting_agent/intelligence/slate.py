@@ -115,5 +115,31 @@ def select_card(candidates: list[BetCandidate], slate: Slate, cap: int) -> list[
     return card
 
 
+def cap_per_slate(candidates: list[BetCandidate], slates: list[Slate],
+                  cap: int) -> list[BetCandidate]:
+    """
+    The best `cap` candidates *in each slate*, in the input order.
+
+    Cards are built per slate, so a single global cut by edge is not safe: the
+    day's highest edges cluster, and a Sunday whose top candidates all sit in
+    the 1pm window leaves the 4pm window and Sunday night with nothing to card
+    — and a slate with nothing on it is not posted at all. Cutting per slate
+    gives every kickoff window its own allowance.
+
+    A candidate belonging to no slate (an event with no commence_time) is kept:
+    it can never be carded, but it is still a saved paper pick and dropping it
+    here would be a silent behaviour change.
+    """
+    keep: set[int] = set()
+    matched: set[int] = set()
+    for slate in slates:
+        mine = [i for i, c in enumerate(candidates) if _in_slate(c, slate)]
+        matched.update(mine)
+        mine.sort(key=lambda i: candidates[i].edge, reverse=True)
+        keep.update(mine[:cap])
+    keep |= set(range(len(candidates))) - matched
+    return [c for i, c in enumerate(candidates) if i in keep]
+
+
 def candidates_in_slate(candidates: list[BetCandidate], slate: Slate) -> list[BetCandidate]:
     return [c for c in candidates if _in_slate(c, slate)]

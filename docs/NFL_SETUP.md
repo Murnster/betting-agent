@@ -9,7 +9,7 @@ What a game day looks like once this is installed:
 
 | When (local) | Job | What it does | Cost |
 | --- | --- | --- | --- |
-| 12:45 Fri/Sat/Sun, 19:00 Mon-Thu | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds the card (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
+| 12:45 Fri/Sat/Sun, 19:00 Mon-Thu | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds **one card per slate** (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
 | Hourly 09:00–23:00 daily | `nfl_loop.sh closing` | Closing price/line on held picks kicking off in the next 90 min → CLV | credits only for games with held picks |
 | 09:00 daily | `nfl_loop.sh grade` | Finalizes games from nflverse, grades props, posts results + all-time recap | free |
 | 03:15 daily | `nfl_loop.sh backup` | `pg_dump` to `backups/postgres/`, prunes >30 days | free |
@@ -213,9 +213,24 @@ If the user already has a crontab, append with `crontab -e` instead of piping.
 
 Two knobs, set in the crontab environment or before the command:
 
-- `NFL_SUGGEST` (default 6): games priced on a full slate, ranked by model heat. Six
-  Sunday games at 6 credits is 36 credits; see §7.
+- `NFL_SUGGEST` (default 16): games priced on a full slate, ranked by model heat. 16 is
+  the largest slate of the season, so every game of every day is priced; see §7.
+- `NFL_MAX_PICKS` (default 10): main-card prop candidates kept **per slate**.
 - `NFL_CLOSING_WINDOW` (default 90 minutes).
+
+**`NFL_SUGGEST` is what keeps every Sunday window on the card, and lowering it can
+silently drop a whole window.** `--suggest` heat-ranks the day in one flat list that has
+no idea slates exist; the split into Sunday Early / Sunday Late / Sunday Night happens
+afterwards. Spend all six games on the 1pm window and the 4pm window and Sunday night
+have nothing to card — and `props.py` does not post a slate with nothing on it. Sunday
+night is the most exposed: one game competing against a full slate.
+
+`--max-picks` used to have the same failure mode (a single global cut by edge) and is now
+applied per slate (`cap_per_slate`), so each window keeps its own allowance. Raising it
+does **not** add card slots — those are the per-slate caps in `intelligence/slate.py`
+(3 props in a window, 2 in a primetime single-game slate) — it only adds off-card saved
+picks. Off-card picks are staked in the paper ledger like any other, so this is a real
+change in exposure, not just bookkeeping.
 
 The laptop has to be awake at those times. Disable suspend on AC power (GNOME: Settings
 → Power → Automatic Suspend off; or `sudo systemctl mask sleep.target suspend.target`)
@@ -232,18 +247,19 @@ three alternate boards (3). The game lean is 3 credits per run regardless of gam
 `capture_closing_lines_for_upcoming` filters on `Pick.closing_odds IS NULL`, so the
 hourly job never re-bills a game it already captured).
 
-**One free key does not cover the season.** Costed against the real 2026 schedule at
-`NFL_SUGGEST=6` with every section on, cards plus one closing capture per priced game:
+**One free key does not cover the season.** Costed against the real 2026 schedule with
+every section on and every game priced (`NFL_SUGGEST=16`), cards plus the daily lean call
+plus one closing capture per game:
 
-| Month | Games | Priced | Credits |
+| Month | Games | Game days | Credits |
 | --- | --- | --- | --- |
-| Sep 2026 | 48 | 25 | 330 |
-| Oct 2026 | 60 | 33 | 435 |
-| Nov 2026 | 71 | 43 | **564** |
-| Dec 2026 | 62 | 38 | **501** |
-| Jan 2027 | 31 | 13 | 165 |
+| Sep 2026 | 48 | 10 | 414 |
+| Oct 2026 | 60 | 13 | 519 |
+| Nov 2026 | 71 | 16 | **616** |
+| Dec 2026 | 62 | 15 | 541 |
+| Jan 2027 | 31 | 3 | 257 |
 
-November and December are over a single key's 500. When a key runs out the API answers
+Every month except January is at or over a single key's 500. When a key runs out the API answers
 401 and the card job dies with `No prop odds returned` — no Discord post, and nothing
 tells you except the absence of a card.
 
@@ -251,15 +267,21 @@ tells you except the absence of a card.
 to additional Odds API accounts; `OddsAPIClient` walks them in order, rotating on a
 quota 401/429 (and on a revoked key), and retires a key the moment its
 `x-requests-remaining` header hits zero so the next call does not waste a round trip.
-Three free keys is a 1500/month pool against a 564-credit peak. Asking an exhausted key
+Three free keys is a 1500/month pool against a 616-credit peak — 2.4x headroom while
+still pricing every game of every slate. Asking an exhausted key
 costs nothing, so the fallback itself is free. Each cron run is a fresh process and
 starts again at key 1: expect one harmless 401 per run late in a month.
 
 Every fetch logs `Odds API key N of M: X credits remaining` at INFO, so
 `grep 'credits remaining' logs/nfl_card.log | tail` is the monthly health check.
 
-If you would rather run on one key, the levers in order of what you give up least are:
-lower `NFL_SUGGEST` (4 keeps the November peak at 444); `LADDER_MARKETS` without
+Pricing more games costs credits but barely touches the Opus bill: the validator only
+ever sees card entries (`props.py` passes `on_cards`), and those are capped per slate, so
+a wider fetch buys a better field to choose the same number of card picks from.
+
+If you would rather run on one key, the levers in order of what you give up least are —
+but note the first one costs you Sunday windows, see §6: lower `NFL_SUGGEST`;
+`LADDER_MARKETS` without
 `player_receptions` (-1/game, and the diagnostic rates receptions ladders worst);
 `--no-td` (-1/game); `--no-leans` (-3/run).
 

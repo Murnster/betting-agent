@@ -60,7 +60,13 @@ from betting_agent.intelligence.ev import american_to_implied_prob, remove_vig
 from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.intelligence.game_lean import REFERENCE_BOOK, fetch_game_lines, game_leans
 from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
-from betting_agent.intelligence.slate import Slate, candidates_in_slate, group_events_by_slate, select_card
+from betting_agent.intelligence.slate import (
+    Slate,
+    candidates_in_slate,
+    cap_per_slate,
+    group_events_by_slate,
+    select_card,
+)
 from betting_agent.sports.nfl.props import (
     ALTERNATE_MARKETS,
     DEFAULT_LADDER_HOLD,
@@ -956,7 +962,11 @@ def main() -> None:
     parser.add_argument("--min-edge", type=float, default=None,
                         help="Override the per-market edge floors "
                              f"(defaults: {PROP_EDGE_FLOORS})")
-    parser.add_argument("--max-picks", type=int, default=10)
+    parser.add_argument("--max-picks", type=int, default=10,
+                        help="Main-card prop candidates to keep PER SLATE. The "
+                             "cut is per kickoff window, not per day: a global "
+                             "cut starves the later windows (see "
+                             "intelligence/slate.py cap_per_slate)")
     parser.add_argument("--pick-games", action="store_true",
                         help="List upcoming games (free call) and choose which "
                              "to fetch prop odds for — saves API credits")
@@ -1103,7 +1113,10 @@ def main() -> None:
         current_teams=roster, schedule=schedule, injuries=injuries, qb1=qb1,
         book_order=books,
     )
-    candidates = candidates[:args.max_picks]
+    # Per slate, not per day — a global cut by edge can spend its whole
+    # allowance on the 1pm window and leave Sunday night with nothing to card.
+    slates = group_events_by_slate(events)
+    candidates = cap_per_slate(candidates, slates, args.max_picks)
     td_picks: list[BetCandidate] = []
     if td_model is not None:
         td_picks = generate_td_candidates(
@@ -1131,7 +1144,6 @@ def main() -> None:
     # The card's TD scorers: like the game lean, up to lean_cap per slate,
     # best edge first; the rest of the TD entries are saved off-card. The
     # overs and ladder sub-sections each take the slate's prop cap.
-    slates = group_events_by_slate(events)
     td_card: list[BetCandidate] = []
     ladder_card: list[BetCandidate] = []
     overs_card: list[BetCandidate] = []

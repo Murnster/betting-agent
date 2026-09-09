@@ -25,16 +25,28 @@ export PATH="$CLAUDE_BIN_DIR:$(dirname "$UV_BIN"):/usr/local/bin:/usr/bin:/bin"
 unset CLAUDECODE
 
 # Games to price on a full slate. Each game costs 6 Odds API credits (2
-# receiving markets + TD board + 3 ladder boards); the free tier is 500/month.
-SUGGEST="${NFL_SUGGEST:-6}"
+# receiving markets + TD board + 3 ladder boards). 16 is the largest slate of
+# the 2026 season (Jan 10), so every game of every day gets priced: --suggest
+# ranks the whole day in ONE flat list with no idea slates exist, so a smaller
+# N could spend all its games on the 1pm window and leave the 4pm window and
+# Sunday night with nothing to card. Pricing everything peaks at 616 credits
+# in November against 1500 pooled across the three keys.
+SUGGEST="${NFL_SUGGEST:-16}"
+# Main-card prop candidates kept PER SLATE (props.py cuts per kickoff window,
+# not per day, so the 4pm window and Sunday night keep their own allowance).
+# Raising this does not add card slots — those are capped per slate — it only
+# adds off-card saved picks, and off-card picks are staked in the paper ledger
+# too, so it is a real change in exposure. 10 per window is the default.
+MAX_PICKS="${NFL_MAX_PICKS:-10}"
 
 cd "$PROJECT_ROOT"
 stamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 case "${1:-}" in
   card)
-    echo "[$(stamp)] card: today's slate (top $SUGGEST games by model heat)"
-    "$UV_BIN" run python scripts/props.py --today --save --suggest "$SUGGEST"
+    echo "[$(stamp)] card: today's slate (up to $SUGGEST games by model heat)"
+    "$UV_BIN" run python scripts/props.py --today --save --suggest "$SUGGEST" \
+        --max-picks "$MAX_PICKS"
     ;;
   closing)
     echo "[$(stamp)] closing: held picks kicking off inside the window"
