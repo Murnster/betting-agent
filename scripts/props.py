@@ -51,7 +51,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -251,7 +251,8 @@ def _choose_events(ranked: list[tuple[dict, int, float]]) -> list[dict]:
     return picked or events
 
 
-def _events_commencing_today(events: list[dict], now: datetime | None = None) -> list[dict]:
+def _events_commencing_today(events: list[dict], now: datetime | None = None,
+                             within_hours: float | None = None) -> list[dict]:
     """
     Games whose kickoff falls on the LOCAL calendar day and has not started.
 
@@ -261,9 +262,17 @@ def _events_commencing_today(events: list[dict], now: datetime | None = None) ->
     Saturday, Sunday, and Monday slates all match on their own day, and
     off-days return nothing (no credits spent). Games already kicked off are
     dropped so a second run never refreshes saved picks with in-play prices.
+
+    `within_hours` additionally keeps only kickoffs inside that window. The
+    Sunday international game starts at 9:30 ET, hours before the main Sunday
+    card run, so it needs its own early run — and that run must NOT price the
+    other thirteen games, which the midday run will price at fresher numbers
+    for the same credits. Nothing is lost by excluding them: the midday run
+    then skips the international game, which has already kicked off.
     """
     now = (now or datetime.now()).astimezone()
     today = now.date()
+    cutoff = now + timedelta(hours=within_hours) if within_hours else None
     out = []
     for e in events:
         try:
@@ -272,8 +281,11 @@ def _events_commencing_today(events: list[dict], now: datetime | None = None) ->
             )
         except ValueError:
             continue
-        if kickoff.astimezone().date() == today and kickoff > now:
-            out.append(e)
+        if kickoff.astimezone().date() != today or kickoff <= now:
+            continue
+        if cutoff is not None and kickoff > cutoff:
+            continue
+        out.append(e)
     return out
 
 
@@ -974,6 +986,11 @@ def main() -> None:
                         help="Rank upcoming games by expected prop edges (free "
                              "pre-screen) and fetch odds for only the top N "
                              "(~2 credits per game)")
+    parser.add_argument("--within-hours", type=float, default=None, metavar="N",
+                        help="With --today, price only games kicking off within N hours. "
+                             "The Sunday 9:30 ET international game needs its own early "
+                             "run; this keeps that run from spending credits on the games "
+                             "the midday run will price at fresher numbers.")
     parser.add_argument("--today", action="store_true",
                         help="Only games kicking off today (local time). Made "
                              "for a daily cron job: off-days exit immediately "
@@ -1023,9 +1040,11 @@ def main() -> None:
         if not upcoming:
             raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
         if args.today:
-            upcoming = _events_commencing_today(upcoming)
+            upcoming = _events_commencing_today(upcoming, within_hours=args.within_hours)
             if not upcoming:
-                print("No NFL games today — nothing fetched, no credits spent.")
+                window = (f" kicking off in the next {args.within_hours:g}h"
+                          if args.within_hours else "")
+                print(f"No NFL games today{window} — nothing fetched, no credits spent.")
                 return
 
     logger.info("Loading player stats (%s-%s)...", season - 2, season)

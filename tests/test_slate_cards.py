@@ -40,7 +40,8 @@ class TestSlates:
     @pytest.mark.parametrize("ct,label", [
         ("2026-09-10T00:20:00Z", "Wednesday"),        # Wed 20:20 ET opener
         ("2026-09-11T00:15:00Z", "Thursday Night"),
-        ("2026-09-13T13:30:00Z", "Sunday Early"),     # 9:30 ET London game
+        ("2026-09-13T13:30:00Z", "International"),    # 9:30 ET London game
+        ("2026-09-13T16:00:00Z", "Sunday Early"),     # 12:00 ET — still the early window
         ("2026-09-13T17:00:00Z", "Sunday Early"),
         ("2026-09-13T20:25:00Z", "Sunday Late"),
         ("2026-09-14T00:20:00Z", "Sunday Night"),     # 20:20 ET Sunday
@@ -210,3 +211,191 @@ class TestCapPerSlate:
     def test_a_candidate_on_no_slate_is_kept_not_silently_dropped(self):
         candidates = [_candidate(external_id="not-an-event-today", edge=0.3)]
         assert len(cap_per_slate(candidates, self._slates(), cap=1)) == 1
+
+
+class TestInternationalSlate:
+    """
+    The Sunday 9:30 ET game gets its own card, and its own run.
+
+    It kicks hours before the 12:45-local Sunday cron, which drops games that
+    have already started — so on the 2026 schedule six games (Weeks 4, 5, 6,
+    7, 9, 10) would have been priced not at all.
+    """
+
+    def test_it_is_a_slate_of_its_own_with_primetime_caps(self):
+        from betting_agent.intelligence.slate import (
+            PRIMETIME_LEAN_CAP,
+            PRIMETIME_PROP_CAP,
+            group_events_by_slate,
+        )
+        slates = group_events_by_slate([
+            _ev("intl", "2026-10-04T13:30:00Z"),                     # 9:30 ET
+            _ev("early", "2026-10-04T17:00:00Z", "Chicago Bears", "Carolina Panthers"),
+        ])
+        assert [s.label for s in slates] == ["International", "Sunday Early"]
+        intl = slates[0]
+        assert intl.single_game
+        assert intl.prop_cap == PRIMETIME_PROP_CAP and intl.lean_cap == PRIMETIME_LEAN_CAP
+
+    def test_thanksgiving_afternoon_games_are_not_thursday_night(self):
+        """
+        Same bug on a Thursday: 13:00 and 16:30 ET games that the 19:00-local
+        run finds already kicked off, and that slate_for used to label
+        "Thursday Night" because the Thursday branch ignored the hour.
+        """
+        from betting_agent.intelligence.slate import (
+            PRIMETIME_PROP_CAP,
+            group_events_by_slate,
+            slate_for,
+        )
+        assert slate_for("2026-11-26T18:00:00Z")[1] == "Thursday Early"   # 13:00 ET
+        assert slate_for("2026-11-26T21:30:00Z")[1] == "Thursday Late"    # 16:30 ET
+        assert slate_for("2026-11-27T01:20:00Z")[1] == "Thursday Night"   # 20:20 ET
+        # A normal Thursday still collapses to the one primetime slate.
+        assert slate_for("2026-09-11T00:15:00Z")[1] == "Thursday Night"
+
+        slates = group_events_by_slate([
+            _ev("a", "2026-11-26T18:00:00Z"),
+            _ev("b", "2026-11-26T21:30:00Z", "Dallas Cowboys", "New York Giants"),
+            _ev("c", "2026-11-27T01:20:00Z", "Green Bay Packers", "Minnesota Vikings"),
+        ])
+        assert [s.label for s in slates] == ["Thursday Early", "Thursday Late", "Thursday Night"]
+        assert all(s.single_game and s.prop_cap == PRIMETIME_PROP_CAP for s in slates)
+
+    def test_the_regular_windows_are_unchanged(self):
+        from betting_agent.intelligence.slate import group_events_by_slate
+        slates = group_events_by_slate([
+            _ev("e", "2026-10-04T17:00:00Z"),                        # 13:00 ET
+            _ev("l", "2026-10-04T20:25:00Z", "Dallas Cowboys", "New York Giants"),
+            _ev("n", "2026-10-05T00:20:00Z", "Green Bay Packers", "Minnesota Vikings"),
+        ])
+        assert [s.label for s in slates] == ["Sunday Early", "Sunday Late", "Sunday Night"]
+
+    def test_the_early_run_prices_only_the_imminent_game(self):
+        """--within-hours keeps the 07:45 ET run off the rest of Sunday."""
+        import sys
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        sys.path.insert(0, "scripts")
+        from props import _events_commencing_today
+
+        et = ZoneInfo("America/New_York")
+        events = [_ev("intl", "2026-10-04T13:30:00Z"),               # 9:30 ET
+                  _ev("early", "2026-10-04T17:00:00Z"),              # 13:00 ET
+                  _ev("snf", "2026-10-05T00:20:00Z")]                # 20:20 ET
+        now = datetime(2026, 10, 4, 7, 45, tzinfo=et)                # the early cron
+
+        windowed = _events_commencing_today(events, now=now, within_hours=4)
+        assert [e["id"] for e in windowed] == ["intl"]
+        # Unwindowed, the same run would price the whole day.
+        assert len(_events_commencing_today(events, now=now)) == 3
+
+    def test_the_midday_run_skips_the_game_that_already_kicked_off(self):
+        import sys
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        sys.path.insert(0, "scripts")
+        from props import _events_commencing_today
+
+        et = ZoneInfo("America/New_York")
+        events = [_ev("intl", "2026-10-04T13:30:00Z"), _ev("early", "2026-10-04T17:00:00Z")]
+        now = datetime(2026, 10, 4, 11, 45, tzinfo=et)               # the 12:45-local cron
+        assert [e["id"] for e in _events_commencing_today(events, now=now)] == ["early"]
+
+
+class TestCronReachesEveryKickoff:
+    """
+    The card schedule and the kickoff times have to agree.
+
+    Twice now a real game got no card because a fixed cron hour sat after an
+    unusually early kickoff: the Sunday 9:30 ET international games (six in
+    2026) and the Thanksgiving afternoon pair. This reads the schedule
+    `nfl_loop.sh crontab` prints and checks it against the awkward kickoffs,
+    so changing one without the other fails here rather than in November.
+    """
+
+    # (local weekday, local HH:MM, NFL_WITHIN_HOURS) for each `card` entry.
+    @staticmethod
+    def _card_runs() -> list[tuple[int, int, int, float | None]]:
+        import re
+        import subprocess
+
+        out = subprocess.run(["scripts/nfl_loop.sh", "crontab"],
+                             capture_output=True, text=True, check=True).stdout
+        runs = []
+        for line in out.splitlines():
+            if line.startswith("#") or " card" not in line:
+                continue
+            mm, hh, _, _, dow = line.split()[:5]
+            win = re.search(r"NFL_WITHIN_HOURS=(\d+(?:\.\d+)?)", line)
+            for d in dow.split(","):
+                # cron Sunday is 0; Python's weekday() has Monday 0, Sunday 6.
+                runs.append(((int(d) - 1) % 7, int(hh), int(mm),
+                             float(win.group(1)) if win else None))
+        assert runs, "no card entries found in the printed crontab"
+        return runs
+
+    #: Kickoffs that have caught this out, plus the ordinary ones. ET.
+    KICKOFFS = [
+        ("2026-10-04", "09:30", "Sunday international"),
+        ("2026-10-04", "13:00", "Sunday early"),
+        ("2026-10-04", "20:20", "Sunday night"),
+        ("2026-11-26", "13:00", "Thanksgiving early"),
+        ("2026-11-26", "16:30", "Thanksgiving late"),
+        ("2026-11-26", "20:20", "Thanksgiving night"),
+        ("2026-11-27", "15:00", "Black Friday"),
+        ("2026-12-19", "17:00", "December Saturday"),
+        ("2026-12-25", "13:00", "Christmas Friday"),
+        ("2026-09-10", "20:35", "Wednesday opener"),
+        ("2026-09-14", "20:15", "Monday night"),
+        ("2026-09-17", "20:15", "Thursday night"),
+    ]
+
+    def test_every_awkward_kickoff_has_a_card_run_before_it(self):
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        # The crontab is written for a box at ET+1 (America/Halifax).
+        et, local = ZoneInfo("America/New_York"), ZoneInfo("America/Halifax")
+        runs = self._card_runs()
+
+        uncovered = []
+        for day, hhmm, note in self.KICKOFFS:
+            kickoff = datetime.combine(
+                datetime.strptime(day, "%Y-%m-%d").date(),
+                datetime.strptime(hhmm, "%H:%M").time(), tzinfo=et,
+            ).astimezone(local)
+            if not any(
+                run.weekday() == wd and run < kickoff
+                and (win is None or kickoff <= run + timedelta(hours=win))
+                for wd, hh, mm, win in runs
+                for run in [kickoff.replace(hour=hh, minute=mm, second=0, microsecond=0)]
+            ):
+                uncovered.append(f"{note} ({day} {hhmm} ET)")
+        assert not uncovered, "no card run fires before: " + ", ".join(uncovered)
+
+    def test_the_early_runs_stay_off_the_days_they_are_not_for(self):
+        """A windowed early run must exit free on an ordinary week."""
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        et, local = ZoneInfo("America/New_York"), ZoneInfo("America/Halifax")
+        windowed = [r for r in self._card_runs() if r[3] is not None]
+        assert windowed, "expected at least one windowed early run"
+
+        for day, hhmm, note in [("2026-10-04", "13:00", "ordinary Sunday early"),
+                                ("2026-09-17", "20:15", "ordinary Thursday night")]:
+            kickoff = datetime.combine(
+                datetime.strptime(day, "%Y-%m-%d").date(),
+                datetime.strptime(hhmm, "%H:%M").time(), tzinfo=et,
+            ).astimezone(local)
+            for wd, hh, mm, win in windowed:
+                if wd != kickoff.weekday():
+                    continue
+                run = kickoff.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                assert kickoff > run + timedelta(hours=win), (
+                    f"the {hh}:{mm:02d} early run would re-price the {note} "
+                    "that the midday run prices at fresher odds"
+                )

@@ -1,9 +1,9 @@
 """
 NFL slates: which card a game belongs on.
 
-A slate is a kickoff window — Thursday night, Sunday early, Sunday late,
-Sunday night, Monday night (plus the odd Saturday/Friday/international
-game). Cards are built per slate: a single-game slate (primetime) carries
+A slate is a kickoff window — Thursday night, the Sunday 9:30 ET
+international game, Sunday early, Sunday late, Sunday night, Monday night
+(plus the odd Saturday/Friday game). Cards are built per slate: a single-game slate (primetime) carries
 one game lean and up to PRIMETIME_PROP_CAP props; a multi-game window carries
 up to WINDOW_LEAN_CAP leans and WINDOW_PROP_CAP props. Everything that
 clears the floors is still saved for the paper trade; the caps only decide
@@ -29,6 +29,9 @@ PRIMETIME_PROP_CAP = 4
 WINDOW_PROP_CAP = 3
 PRIMETIME_LEAN_CAP = 1
 WINDOW_LEAN_CAP = 3
+#: Sunday kickoffs before this ET hour are international games. No domestic
+#: Sunday game starts before 13:00 ET; the international ones start at 9:30.
+INTERNATIONAL_BEFORE_ET = 12
 
 
 def _kickoff_et(commence_time: str | datetime) -> datetime:
@@ -44,14 +47,32 @@ def slate_for(commence_time: str | datetime) -> tuple[str, str, date]:
     k = _kickoff_et(commence_time)
     day = k.strftime("%a").lower()
     if day == "sun":
-        if k.hour < 15:
+        if k.hour < INTERNATIONAL_BEFORE_ET:
+            # London/Dublin/Berlin/Madrid kick at 9:30 ET, hours before the
+            # 1pm window. It is a standalone game with nothing to share the
+            # card with, exactly like Thursday or Monday night, so it gets its
+            # own slate and (being single-game) the primetime caps. Defined by
+            # kickoff hour rather than the schedule's `location`, which says
+            # "Home" for the games where a US team is the designated host.
+            part, label = "0-intl", "International"
+        elif k.hour < 15:
             part, label = "1-early", "Sunday Early"
         elif k.hour < 19:
             part, label = "2-late", "Sunday Late"
         else:
             part, label = "3-night", "Sunday Night"
     elif day == "thu":
-        part, label = "0", "Thursday Night"
+        # Thanksgiving is three standalone games (13:00 / 16:30 / 20:20 ET),
+        # not one night game. Splitting them the way Sunday is split gives
+        # each its own card, and stops the afternoon pair being labelled
+        # "Thursday Night". Every other Thursday has only the 20:15 game, so
+        # this collapses to the single primetime slate as before.
+        if k.hour < 15:
+            part, label = "1-early", "Thursday Early"
+        elif k.hour < 19:
+            part, label = "2-late", "Thursday Late"
+        else:
+            part, label = "3-night", "Thursday Night"
     elif day == "mon":
         part, label = "0", "Monday Night"
     else:

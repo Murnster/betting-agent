@@ -385,6 +385,17 @@ applied):
   receiving markets. Not strictly contradictory (a TE scores on 2 catches),
   but it is the same tension the user objected to for Doubs. Decide with the
   TD window review.
+- [x] **Every kickoff now has a card run before it (2026-09-10).** Two
+  windows started before their weekday's cron and so were priced not at all:
+  the Sunday 9:30 ET international game (six in 2026 — Weeks 4, 5, 6, 7, 9,
+  10) and Thanksgiving's 13:00 + 16:30 ET pair, which `slate_for` was also
+  mislabelling "Thursday Night". Both are now their own single-game slates
+  (primetime caps, user's call: "those should be treated like primetimes"),
+  with 08:45-local early cron runs windowed by the new `--within-hours N` so
+  they price only the imminent game and leave the rest of the day to the
+  midday run. +48 credits over the season. A test reads the schedule
+  `nfl_loop.sh crontab` prints and checks it against the awkward kickoffs, so
+  the cron and the slate logic cannot drift apart again.
 - [x] **Extras channel for the off-card props (2026-09-10, user: "take all
   extra picks and move to a props channel that we track outside the main
   build").** `DISCORD_WEBHOOK_NFL_EXTRAS` (picks) +
