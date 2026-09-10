@@ -1113,6 +1113,13 @@ def main() -> None:
         current_teams=roster, schedule=schedule, injuries=injuries, qb1=qb1,
         book_order=books,
     )
+    # Every player the main model has a view on, INCLUDING the ones the
+    # per-slate cap is about to cut. The overs and ladder sections exclude
+    # this set, so it has to be taken before the cut: on the 2026 opener
+    # Romeo Doubs was carded as an over on receiving yards while the main
+    # model had him under on receptions, because the cut had dropped him from
+    # the exclusion set. The card must never argue with itself.
+    modelled_players = {normalize_player(c.player) for c in candidates}
     # Per slate, not per day — a global cut by edge can spend its whole
     # allowance on the 1pm window and leave Sunday night with nothing to card.
     slates = group_events_by_slate(events)
@@ -1131,14 +1138,14 @@ def main() -> None:
         over_picks = generate_over_candidates(
             events, models, overs_bankroll, season, current_teams=roster,
             schedule=schedule, injuries=injuries, qb1=qb1, book_order=books,
-            exclude_players={normalize_player(c.player) for c in candidates},
+            exclude_players=modelled_players,
         )
     ladder_picks: list[BetCandidate] = []
     if ladder_models:
         ladder_picks = generate_ladder_candidates(
             events, ladder_models, ladder_bankroll, season, current_teams=roster,
             schedule=schedule, injuries=injuries, qb1=qb1, book_order=books,
-            exclude_players={normalize_player(c.player) for c in candidates + over_picks},
+            exclude_players=modelled_players | {normalize_player(c.player) for c in over_picks},
             markets=list(ladder_models), min_edge=None,
         )
     # The card's TD scorers: like the game lean, up to lean_cap per slate,

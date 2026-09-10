@@ -267,3 +267,32 @@ def test_stub_signature_matches_real_model():
     real = props_script.ReceivingPropsModel
     assert hasattr(real, "project_ladder")
     assert isinstance(SimpleNamespace(), object)
+
+
+def test_sections_are_excluded_against_the_uncapped_main_candidates():
+    """
+    The card must never argue with itself.
+
+    On the 2026 opener Romeo Doubs was carded as a straight over on receiving
+    yards while the main model had him under on receptions: the overs section
+    excluded the players in the *capped* candidate list, and the per-slate cut
+    had already dropped him from it. The exclusion set has to be taken before
+    the cut.
+    """
+    import inspect
+    import re
+
+    import scripts.props as props_mod
+
+    src = inspect.getsource(props_mod.main)
+    build = src.index("modelled_players = {")
+    cut = src.index("cap_per_slate(")
+    assert build < cut, "modelled_players must be taken before the per-slate cut"
+
+    # Neither section may rebuild its own exclusion set from the capped list.
+    for section in ("generate_over_candidates", "generate_ladder_candidates"):
+        call = src[src.index(section):]
+        call = call[: call.index(")\n") + 1]
+        assert "modelled_players" in call, f"{section} must exclude the main model's players"
+        assert not re.search(r"for c in candidates\b", call), \
+            f"{section} still builds its exclusion set from the capped list"

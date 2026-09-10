@@ -20,7 +20,12 @@ from betting_agent.intelligence.picks import BetCandidate
 
 ET = ZoneInfo("America/New_York")
 
-PRIMETIME_PROP_CAP = 2
+# A primetime slate is one game, so its card is the only card that day and
+# there is nothing to spread across. The walk-forward eval (2024-25, ranked by
+# edge within the week) finds no reliable ordering inside the top ten — rank
+# 1-3 realised 64.3% ±8.4 against 69.3% ±4.4 for ranks 1-10 — so the two extra
+# slots cost nothing in pick quality. User's call, Sep 10 2026.
+PRIMETIME_PROP_CAP = 4
 WINDOW_PROP_CAP = 3
 PRIMETIME_LEAN_CAP = 1
 WINDOW_LEAN_CAP = 3

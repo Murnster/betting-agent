@@ -366,6 +366,37 @@ applied):
   section), so the game line is a **lean**: Pinnacle fair price → bettable
   book's line → best-edge side (`intelligence/game_lean.py`), labelled LEAN,
   saved on paper, closing line captured by `--closing`.
+- [x] **Primetime card widened to 4 props + no cross-section mismatches
+  (2026-09-10, user: "for primetime games we do the top 4 of the graded
+  picks ... we definitely shouldn't be picking mis-matching like doubs over
+  receiving but also under receptions").** `PRIMETIME_PROP_CAP` 2 → 4. The
+  walk-forward eval (`prop_picks_eval.csv`, 10,740 rows, ranked by edge
+  within the week) shows no reliable ordering inside the top ten: rank 1-3
+  realised 64.3% ±8.4 vs 69.3% ±4.4 for ranks 1-10, and the biggest claimed
+  edges over-claim the most (83.5% claimed → 64.3% realised at rank 1-3).
+  The mismatch was a wiring bug: the overs/ladder exclusion set was built
+  from the list `cap_per_slate()` had already cut, so a player dropped at
+  rank 11+ could come back as an over against the main model's under. Now
+  taken from the uncapped list.
+- [ ] **Should the anytime-TD board be deduped against the receiving picks?**
+  Open question raised 2026-09-10. TD candidates are exempt from the
+  cross-section player exclusion by design, so the 2026 opener carded AJ
+  Barner to score a TD while the main model had him under on both his
+  receiving markets. Not strictly contradictory (a TE scores on 2 catches),
+  but it is the same tension the user objected to for Doubs. Decide with the
+  TD window review.
+- [ ] **What to do with the off-card picks — decide after a few weeks of
+  data.** Options discussed 2026-09-10: (a) leave them off-card and read them
+  with `report.py --off-card` (status quo, zero cost); (b) post them to their
+  own Discord channel with their own paper bankroll, same pattern as the
+  ladder/overs side books — gives visibility without touching the main
+  record, and turns the "should the card be wider" question into a measured
+  A/B; (c) build a parlay from them and grade it in a parlay channel —
+  rejected for now: parlay legs compound the model's calibration error the
+  same way they compound edge (4 legs claimed at 70% but truly 60% → 24%
+  claimed vs 13% true), the Odds API posts no parlay price so the paper
+  price would be synthetic, and one parlay a week is a far worse measuring
+  instrument than eight singles over an 18-week season.
 - [x] **Only carded picks count in the record (2026-09-10, user: "the results
   channel should not be showing results that we weren't offered to pick on
   ... nor should it be counting it in our all-time results").** The results
