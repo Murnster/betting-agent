@@ -385,18 +385,30 @@ applied):
   receiving markets. Not strictly contradictory (a TE scores on 2 catches),
   but it is the same tension the user objected to for Doubs. Decide with the
   TD window review.
-- [ ] **What to do with the off-card picks — decide after a few weeks of
-  data.** Options discussed 2026-09-10: (a) leave them off-card and read them
-  with `report.py --off-card` (status quo, zero cost); (b) post them to their
-  own Discord channel with their own paper bankroll, same pattern as the
-  ladder/overs side books — gives visibility without touching the main
-  record, and turns the "should the card be wider" question into a measured
-  A/B; (c) build a parlay from them and grade it in a parlay channel —
-  rejected for now: parlay legs compound the model's calibration error the
-  same way they compound edge (4 legs claimed at 70% but truly 60% → 24%
-  claimed vs 13% true), the Odds API posts no parlay price so the paper
-  price would be synthetic, and one parlay a week is a far worse measuring
-  instrument than eight singles over an 18-week season.
+- [x] **Extras channel for the off-card props (2026-09-10, user: "take all
+  extra picks and move to a props channel that we track outside the main
+  build").** `DISCORD_WEBHOOK_NFL_EXTRAS` + `EXTRAS_BANKROLL`: the off-card
+  props post at card time and again at grading time, with their own record,
+  ROI and paper bankroll, and never appear in the results channel.
+  `grade.py --repost YYYY-MM-DD` re-posts an already-graded day through the
+  current `on_card` flags (no grading, no API calls). The parlay option was
+  rejected: parlay legs compound the model's calibration error the same way
+  they compound edge (4 legs claimed at 70% but truly 60% → 24% claimed vs
+  13% true), the Odds API posts no parlay price so the paper price would be
+  synthetic, and one parlay a week is a far worse measuring instrument than
+  eight singles over an 18-week season.
+- [ ] **Review the card width after ~6 weeks of extras data.** The whole point
+  of the extras channel: compare its all-time line with the main card's. If
+  the extras keep pace, widen `WINDOW_PROP_CAP` / `PRIMETIME_PROP_CAP`; if
+  they lag, the edge ranking is doing more work than the eval suggested and
+  the card is already the right size.
+- [ ] **The side books' own off-card leftovers are reported nowhere.** An
+  off-card ladder/overs/TD pick (e.g. a superseded card entry from an earlier
+  run that day) is graded but appears in neither the main results (on_card
+  only) nor the extras channel (main book only). Deliberate for now — the
+  extras channel is the counterfactual for the MAIN card, and folding three
+  books' sizing into one P&L would muddy it. Revisit if those leftovers ever
+  become numerous.
 - [x] **Only carded picks count in the record (2026-09-10, user: "the results
   channel should not be showing results that we weren't offered to pick on
   ... nor should it be counting it in our all-time results").** The results

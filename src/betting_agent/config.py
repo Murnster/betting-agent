@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     # already fetched for the unders card.
     overs_enabled: bool = Field(default=True)
     overs_bankroll: float = Field(default=100.0, description="Straight-overs section's paper bankroll")
+    # Extras — the props that cleared the floors but did not make the card
+    # (Pick.on_card = False). Same model and markets as the main card, so they
+    # are NOT a separate Pick.strategy: "carded" and "which book" are different
+    # axes and conflating them would make a pick change identity when it makes
+    # the card. They post to their own Discord channel and carry their own
+    # paper bankroll so their ROI is readable next to the card's.
+    extras_enabled: bool = Field(default=True)
+    extras_bankroll: float = Field(default=100.0, description="Off-card props' paper bankroll")
     ladder_markets: str = Field(
         default="player_receptions,player_reception_yds,player_rush_yds",
         description=(

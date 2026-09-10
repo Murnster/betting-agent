@@ -149,11 +149,18 @@ def current_bankroll(sport: str | None = None, strategy: str | None = None,
 
 def ledger_summary(sport: str | None = None, strategy: str | None = None,
                    exclude_strategy: str | Sequence[str] | None = None,
-                   on_card: bool | None = None) -> dict[str, Any]:
-    """Headline equity numbers for reports."""
+                   on_card: bool | None = None,
+                   starting_bankroll: float | None = None) -> dict[str, Any]:
+    """
+    Headline equity numbers for reports.
+
+    `starting_bankroll` overrides the strategy's own: the off-card extras are
+    not a Pick.strategy (they are the main book's picks that missed the card),
+    so their book is addressed as on_card=False plus settings.extras_bankroll.
+    """
+    start = starting_bankroll if starting_bankroll is not None else starting_bankroll_for(strategy)
     curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy,
-                         on_card=on_card)
-    start = starting_bankroll_for(strategy)
+                         on_card=on_card, starting_bankroll=start)
     if not curve:
         return {
             "starting_bankroll": start,

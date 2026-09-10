@@ -100,3 +100,31 @@ def test_get_summary_filters_to_carded_picks(monkeypatch):
     seen.clear()
     roi_mod.get_summary(sport="NBA", on_card=None)
     assert not any("on_card" in f for f in seen), seen
+
+
+def test_graded_window_can_be_bounded_at_both_ends(monkeypatch):
+    """--repost re-reads one already-graded day, so it bounds graded_at."""
+    from datetime import datetime
+
+    from betting_agent.accounting import roi as roi_mod
+
+    seen: list[str] = []
+
+    class _FilterQuery(_Query):
+        def filter(self, *clauses, **kwargs):
+            seen.extend(str(c) for c in clauses)
+            return self
+
+    class _FilterSession:
+        def query(self, *_args, **_kwargs):
+            return _FilterQuery([_Pick(result="win", pnl=5.0, recommended_bet=10.0, edge=0.1)])
+
+    @contextmanager
+    def _fake_session():
+        yield _FilterSession()
+
+    monkeypatch.setattr(roi_mod, "get_session", _fake_session)
+
+    roi_mod.get_summary(sport="NFL", graded_since=datetime(2026, 9, 10),
+                        graded_until=datetime(2026, 9, 10, 23, 59, 59))
+    assert sum("picks.graded_at" in f for f in seen) == 2, seen

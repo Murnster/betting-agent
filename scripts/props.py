@@ -1201,7 +1201,11 @@ def main() -> None:
     for slate in slates:
         card_props = select_card(candidates, slate, slate.prop_cap)
         card_leans = select_card(leans, slate, slate.lean_cap)
-        off_card = len(candidates_in_slate(candidates, slate)) - len(card_props)
+        # The extras: this slate's main-book props that cleared the floors and
+        # missed the cut. Identity, not equality — two picks can look alike.
+        carded = {id(c) for c in card_props}
+        extras = [c for c in candidates_in_slate(candidates, slate) if id(c) not in carded]
+        off_card = len(extras)
         slate_td = candidates_in_slate(td_card, slate)
         td_off_card = len(candidates_in_slate(td_picks, slate)) - len(slate_td)
         slate_ladder = candidates_in_slate(ladder_card, slate)
@@ -1209,7 +1213,7 @@ def main() -> None:
         slate_overs = candidates_in_slate(overs_card, slate)
         overs_off_card = len(candidates_in_slate(over_picks, slate)) - len(slate_overs)
         cards.append((slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off_card,
-                      slate_overs, overs_off_card))
+                      slate_overs, overs_off_card, extras))
         _print_slate(slate, card_leans, card_props, off_card, shadow, slate_td, td_off_card,
                      ladder=slate_ladder if ladder_models else None,
                      ladder_off_card=ladder_off_card, ladder_bankroll=ladder_bankroll,
@@ -1247,21 +1251,28 @@ def main() -> None:
         try:
             from betting_agent.notifications.discord import (
                 is_discord_configured,
+                send_extras_to_discord,
                 send_slate_to_discord,
             )
-            if is_discord_configured("NFL", "PICKS"):
-                for (slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off,
-                     slate_overs, overs_off) in cards:
-                    if not any((card_leans, card_props, slate_td, slate_ladder, slate_overs)):
-                        continue
+            cards_configured = is_discord_configured("NFL", "PICKS")
+            extras_configured = settings.extras_enabled and is_discord_configured("NFL", "EXTRAS")
+            for (slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off,
+                 slate_overs, overs_off, extras) in cards:
+                title = f"{slate.title()} — {slate.date}"
+                if cards_configured and any((card_leans, card_props, slate_td, slate_ladder,
+                                             slate_overs)):
                     logger.info("Sending %s card to Discord...", slate.label)
-                    send_slate_to_discord(f"{slate.title()} — {slate.date}", card_leans, card_props,
+                    send_slate_to_discord(title, card_leans, card_props,
                                           bankroll, "NFL", agent_summary=agent_summary,
                                           extra_saved=off_card, td_scorers=slate_td,
                                           ladder=slate_ladder, ladder_saved=ladder_off,
                                           ladder_bankroll=ladder_bankroll,
                                           overs=slate_overs, overs_saved=overs_off,
                                           overs_bankroll=overs_bankroll)
+                # The off-card props go to their own channel, never the card's.
+                if extras_configured and extras:
+                    logger.info("Sending %s extras to Discord (%d)...", slate.label, len(extras))
+                    send_extras_to_discord(title, extras, settings.extras_bankroll, "NFL")
         except Exception as exc:
             logger.warning("Discord notification failed: %s", exc)
 

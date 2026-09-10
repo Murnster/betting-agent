@@ -454,6 +454,30 @@ def _td_line(td_summary: dict[str, Any] | None, label: str = "TD scorers") -> st
     return text
 
 
+def _result_line(d: dict[str, Any], leans_labelled: bool = False) -> str:
+    """One graded pick as a results line, tagged by the section it came from."""
+    result_tag = d["result"].upper()
+    pnl_val = d["pnl"]
+    pnl_str = f"+${pnl_val:,.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):,.2f}"
+    matchup = f"{d['away_team']} @ {d['home_team']}"
+    odds_str = f"{d['odds']:+d}" if d["odds"] else ""
+    if d.get("bet_type") == "prop" and d.get("market") == TD_MARKET:
+        bet_desc = f"TD {d['player']} anytime TD"
+    elif d.get("bet_type") == "prop" and d.get("strategy") == LADDER_STRATEGY:
+        bet_desc = f"LADDER {ladder_label(d.get('player'), d.get('market'), d.get('line'))}"
+    elif d.get("bet_type") == "prop" and d.get("strategy") == OVERS_STRATEGY:
+        bet_desc = f"OVER {over_label(d.get('player'), d.get('market'), d.get('line'))}"
+    elif d.get("bet_type") == "prop" and d.get("player"):
+        line_val = d.get("line")
+        line_str = f" {line_val:g}" if line_val is not None else ""
+        bet_desc = f"{d['player']} {_market_label(d.get('market'))} {d['pick_side']}{line_str}"
+    elif leans_labelled and d.get("bet_type") in LEAN_BET_TYPES:
+        bet_desc = f"LEAN {d['pick_side']} {d['bet_type'].title()}"
+    else:
+        bet_desc = f"{d['pick_side']} {d['bet_type'].title()}"
+    return f"`{result_tag}`  {bet_desc} ({odds_str}) \u2014 {matchup} \u2014 {pnl_str}"
+
+
 def _build_results_embed(
     summary: dict[str, Any],
     sport: str,
@@ -514,32 +538,8 @@ def _build_results_embed(
     if pick_details:
         lines.append("")
         lines.append("**Picks:**")
-        for d in pick_details:
-            result_tag = d["result"].upper()
-            pnl_val = d["pnl"]
-            pnl_str = f"+${pnl_val:,.2f}" if pnl_val >= 0 else f"-${abs(pnl_val):,.2f}"
-            matchup = f"{d['away_team']} @ {d['home_team']}"
-            odds_str = f"{d['odds']:+d}" if d["odds"] else ""
-            if d.get("bet_type") == "prop" and d.get("market") == TD_MARKET:
-                bet_desc = f"TD {d['player']} anytime TD"
-            elif d.get("bet_type") == "prop" and d.get("strategy") == LADDER_STRATEGY:
-                bet_desc = f"LADDER {ladder_label(d.get('player'), d.get('market'), d.get('line'))}"
-            elif d.get("bet_type") == "prop" and d.get("strategy") == OVERS_STRATEGY:
-                bet_desc = f"OVER {over_label(d.get('player'), d.get('market'), d.get('line'))}"
-            elif d.get("bet_type") == "prop" and d.get("player"):
-                market = _market_label(d.get("market"))
-                line_val = d.get("line")
-                line_str = f" {line_val:g}" if line_val is not None else ""
-                bet_desc = (f"{d['player']} {market} "
-                            f"{d['pick_side']}{line_str}")
-            elif lean_summary is not None and d.get("bet_type") in LEAN_BET_TYPES:
-                bet_desc = f"LEAN {d['pick_side']} {d['bet_type'].title()}"
-            else:
-                bet_desc = f"{d['pick_side']} {d['bet_type'].title()}"
-            lines.append(
-                f"`{result_tag}`  {bet_desc} ({odds_str}) "
-                f"\u2014 {matchup} \u2014 {pnl_str}"
-            )
+        lines.extend(_result_line(d, leans_labelled=lean_summary is not None)
+                     for d in pick_details)
 
     date_str = str(graded_date) if graded_date else ""
     desc = f"{date_str}\n\n" + "\n".join(lines) if date_str else "\n".join(lines)
@@ -801,3 +801,133 @@ def send_alltime_to_discord(
             all_ok = False
 
     return all_ok
+
+
+# ---------------------------------------------------------------------------
+# Extras channel: the props that cleared the floors but missed the card.
+#
+# They are the same model, markets and book as the main card — only the slate
+# cap separated them — so they are not a Pick.strategy, just on_card=False.
+# They get their own channel and their own paper bankroll so their record can
+# be read next to the card's without ever entering it. The walk-forward eval
+# finds no reliable ordering inside the top ten picks of a week, so whether
+# the card should be wider is a real open question; this channel is the A/B
+# that answers it with live prices instead of a proxy book.
+# ---------------------------------------------------------------------------
+
+#: Extras are listed compactly (there can be dozens); Discord caps an embed
+#: description at 4096 characters, so the list is chunked well inside that.
+EXTRAS_LINES_PER_EMBED = 20
+
+
+def _extras_line(pick: BetCandidate, rank: int) -> str:
+    """One off-card pick, compact: no per-pick embed, there are too many."""
+    book = (pick.extra or {}).get("bookmaker", "")
+    return (
+        f"`{rank:>2}` **{_pick_label(pick)}** `{pick.odds:+d}`"
+        + (f" @ {book}" if book else "")
+        + f"  — {pick.away_team} @ {pick.home_team}\n"
+        f"     edge `{pick.edge:+.1%}`  model `{pick.model_prob:.1%}` vs `{pick.implied_prob:.1%}`"
+        f"  → `${pick.recommended_bet:.2f}`"
+    )
+
+
+def send_extras_to_discord(
+    title: str,
+    extras: list[BetCandidate],
+    bankroll: float,
+    sport: str = "NFL",
+) -> bool:
+    """Post the off-card props for one slate to the extras channel."""
+    url = _get_webhook_url(sport, "EXTRAS")
+    if not url:
+        logger.debug("Discord not configured for %s extras, skipping", sport)
+        return False
+    if not extras:
+        return True
+
+    ranked = sorted(extras, key=lambda c: c.edge, reverse=True)
+    action = sum(c.recommended_bet for c in ranked)
+    header = {
+        "title": f"{SPORT_EMOJI.get(sport.upper(), '')} Extras — {title}",
+        "description": (
+            f"{date.today()}\n\n"
+            f"**Bankroll:** ${bankroll:,.2f}  |  **{len(ranked)} off-card**  |  "
+            f"**Action:** ${action:.2f}\n"
+            "_Cleared the floors but missed the card. Paper only, own bankroll — "
+            "never counted in the main record._"
+        ),
+        "color": COLOR_GREY,
+    }
+
+    lines = [_extras_line(p, i) for i, p in enumerate(ranked, 1)]
+    embeds = [header]
+    for i in range(0, len(lines), EXTRAS_LINES_PER_EMBED):
+        embeds.append({
+            "description": "\n".join(lines[i: i + EXTRAS_LINES_PER_EMBED]),
+            "color": COLOR_GREY,
+        })
+
+    all_ok = True
+    for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
+        if not _send_webhook(url, {"embeds": embeds[i: i + MAX_EMBEDS_PER_MESSAGE]}):
+            all_ok = False
+    return all_ok
+
+
+def send_extras_results_to_discord(
+    summary: dict[str, Any],
+    sport: str,
+    graded_date: date | None = None,
+    pick_details: list[dict] | None = None,
+    alltime_summary: dict[str, Any] | None = None,
+    starting_bankroll: float | None = None,
+) -> bool:
+    """Grading results for the off-card props, in their own channel."""
+    url = _get_webhook_url(sport, "EXTRAS")
+    if not url:
+        return False
+    if "total_bets" not in summary:
+        logger.debug("No graded %s extras, skipping Discord", sport)
+        return True
+
+    pnl = summary.get("total_pnl", 0)
+    lines = [
+        f"**Record:** {summary.get('wins', 0)}-{summary.get('losses', 0)}"
+        f"-{summary.get('pushes', 0)} ({summary.get('win_rate_pct', 0):.1f}%)  |  "
+        f"**P&L:** {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}  |  "
+        f"**ROI:** {summary.get('roi_pct', 0):+.2f}%",
+        f"**Avg Edge:** {summary.get('avg_edge_pct', 0):+.2f}%",
+    ]
+    if summary.get("avg_clv_pct") is not None:
+        lines[-1] += f"  |  **Avg CLV:** {summary['avg_clv_pct']:+.2f}%"
+    if pick_details:
+        lines.append("")
+        lines.append("**Off-card picks:**")
+        lines.extend(_result_line(d) for d in pick_details)
+
+    date_str = str(graded_date) if graded_date else ""
+    embeds = [{
+        "title": f"Extras Results — {sport}",
+        "description": (f"{date_str}\n\n" if date_str else "") + "\n".join(lines),
+        "color": COLOR_GREEN if pnl > 0 else COLOR_RED if pnl < 0 else COLOR_GREY,
+    }]
+
+    if alltime_summary and "total_bets" in alltime_summary:
+        at_pnl = alltime_summary.get("total_pnl", 0)
+        start = starting_bankroll if starting_bankroll is not None else 0.0
+        at = [
+            f"**Record:** {alltime_summary.get('wins', 0)}-{alltime_summary.get('losses', 0)}"
+            f"-{alltime_summary.get('pushes', 0)} "
+            f"({alltime_summary.get('win_rate_pct', 0):.1f}%)  |  "
+            f"**ROI:** {alltime_summary.get('roi_pct', 0):+.2f}%",
+            f"**Bankroll:** ${start:,.2f} → ${start + at_pnl:,.2f}  |  "
+            f"**P&L:** {'+' if at_pnl >= 0 else '-'}${abs(at_pnl):,.2f}",
+            "_The card's counterfactual: what the picks that missed the cut would have "
+            "returned. Compare with the main all-time line to see whether the card is "
+            "wide enough._",
+        ]
+        embeds.append({"title": f"Extras All-time — {sport}",
+                       "description": "\n".join(at), "color": COLOR_BLUE})
+
+    return _send_webhook(url, {"embeds": embeds})
