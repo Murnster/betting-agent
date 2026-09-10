@@ -20,28 +20,44 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def _grade_nfl_props(target_date: date | None) -> int:
-    """Grade ungraded NFL prop picks, loading player stats only when needed."""
+def _pending_nfl(bet_type: str | None = None) -> int:
+    """Ungraded NFL picks, optionally of one bet type."""
     from betting_agent.db.models import Pick
     from betting_agent.db.session import get_session
 
     with get_session() as session:
-        pending = (
-            session.query(Pick)
-            .filter(Pick.result.is_(None), Pick.bet_type == "prop", Pick.sport == "NFL")
-            .count()
-        )
-    if not pending:
-        return 0
+        q = session.query(Pick).filter(Pick.result.is_(None), Pick.sport == "NFL")
+        if bet_type:
+            q = q.filter(Pick.bet_type == bet_type)
+        return q.count()
 
-    # props.py writes its Game rows as "scheduled" (the Odds API event carries
-    # no score), and grading skips any pick whose game is not final. Fill the
-    # scores in from published schedules first, or nothing ever settles.
+
+def _finalize_nfl(target_date: date | None) -> int:
+    """
+    Fill in scores for NFL games that still say "scheduled".
+
+    props.py writes its Game rows as "scheduled" (the Odds API event carries no
+    score) and BOTH graders skip a pick whose game is not final, so this has to
+    run before either of them. It used to sit inside the prop grader, which
+    left the game leans a full day behind: grade_picks() ran first against a
+    still-"scheduled" game, skipped the lean, and only then did the prop path
+    finalize it. The Sep 9 2026 Seahawks lean settled a day late for exactly
+    that reason. Free — published schedules via nflreadpy.
+    """
+    if not _pending_nfl():
+        return 0
     from betting_agent.sports.nfl.results import finalize_nfl_games
 
     finalized = finalize_nfl_games(target_date=target_date)
     if finalized:
         print(f"Finalized {finalized} NFL games from published schedules.")
+    return finalized
+
+
+def _grade_nfl_props(target_date: date | None) -> int:
+    """Grade ungraded NFL prop picks, loading player stats only when needed."""
+    if not _pending_nfl("prop"):
+        return 0
 
     from betting_agent.accounting.grader import grade_prop_picks
     from betting_agent.sports.nfl.props import make_stat_lookup
@@ -80,6 +96,12 @@ def main() -> None:
     if repost_date:
         print(f"Re-posting results graded on {repost_date} (no grading, no API calls).")
     else:
+        # Scores first — both graders gate on Game.status == "final".
+        try:
+            _finalize_nfl(target_date)
+        except Exception as exc:
+            logger.warning("NFL finalization failed: %s", exc)
+
         try:
             n_graded = grade_picks(target_date=target_date)
             print(f"\nGraded {n_graded} picks.")
@@ -194,7 +216,7 @@ def main() -> None:
                 # bankroll — the same filters as the main prop summary above,
                 # inverted on on_card. Never posted to the results channel.
                 if (sport_name == "NFL" and settings.extras_enabled
-                        and is_discord_configured(sport_name, "EXTRAS")):
+                        and is_discord_configured(sport_name, "EXTRAS_RESULTS")):
                     ex = {**main, "bet_type": "prop", "on_card": False}
                     extras_summary = get_summary(sport=sport_name, **ex, **grade_window)
                     if "total_bets" in extras_summary:

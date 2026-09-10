@@ -34,6 +34,7 @@ def sent(monkeypatch):
     posts: list[tuple[str, dict]] = []
     monkeypatch.setattr(d, "_send_webhook", lambda url, payload: posts.append((url, payload)) or True)
     monkeypatch.setenv("DISCORD_WEBHOOK_NFL_EXTRAS", "https://discord.test/extras")
+    monkeypatch.setenv("DISCORD_WEBHOOK_NFL_EXTRAS_RESULTS", "https://discord.test/extras-results")
     return posts
 
 
@@ -41,6 +42,7 @@ class TestExtrasCard:
     def test_posts_every_off_card_pick_ranked_by_edge(self, sent):
         assert d.send_extras_to_discord(
             "Wednesday — NE @ SEA", [_cand("Low", 0.05), _cand("High", 0.30)], 100.0)
+        assert all(url.endswith("/extras") for url, _ in sent)
         body = "\n".join(e.get("description", "") for _, p in sent for e in p["embeds"])
         assert "2 off-card" in body
         assert body.index("High") < body.index("Low")
@@ -64,6 +66,15 @@ class TestExtrasCard:
 
 
 class TestExtrasResults:
+    def test_posts_to_its_own_results_channel(self, sent, monkeypatch):
+        """Picks and results split the same way for the extras as for the card."""
+        monkeypatch.delenv("DISCORD_WEBHOOK_NFL_EXTRAS_RESULTS", raising=False)
+        summary = {"total_bets": 1, "wins": 1, "losses": 0, "pushes": 0, "win_rate_pct": 100.0,
+                   "total_pnl": 1.0, "roi_pct": 10.0, "avg_edge_pct": 5.0}
+        # The extras PICKS webhook must not be used as a fallback.
+        assert d.send_extras_results_to_discord(summary, "NFL") is False
+        assert sent == []
+
     def test_reports_its_own_bankroll_not_the_card_s(self, sent):
         summary = {"total_bets": 9, "wins": 6, "losses": 3, "pushes": 0,
                    "win_rate_pct": 66.7, "total_pnl": 4.49, "roi_pct": 26.38,
@@ -75,6 +86,7 @@ class TestExtrasResults:
         assert d.send_extras_results_to_discord(
             summary, "NFL", date(2026, 9, 10), pick_details=detail,
             alltime_summary=summary, starting_bankroll=250.0)
+        assert all(url.endswith("extras-results") for url, _ in sent)
         body = "\n".join(e.get("description", "") for _, p in sent for e in p["embeds"])
         assert "6-3-0" in body and "A.J. Brown" in body
         assert "$250.00 → $254.49" in body

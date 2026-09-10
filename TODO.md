@@ -387,8 +387,9 @@ applied):
   TD window review.
 - [x] **Extras channel for the off-card props (2026-09-10, user: "take all
   extra picks and move to a props channel that we track outside the main
-  build").** `DISCORD_WEBHOOK_NFL_EXTRAS` + `EXTRAS_BANKROLL`: the off-card
-  props post at card time and again at grading time, with their own record,
+  build").** `DISCORD_WEBHOOK_NFL_EXTRAS` (picks) +
+  `DISCORD_WEBHOOK_NFL_EXTRAS_RESULTS` (results) + `EXTRAS_BANKROLL`: the
+  off-card props post at card time and again at grading time, with their own record,
   ROI and paper bankroll, and never appear in the results channel.
   `grade.py --repost YYYY-MM-DD` re-posts an already-graded day through the
   current `on_card` flags (no grading, no API calls). The parlay option was

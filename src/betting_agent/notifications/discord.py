@@ -55,7 +55,7 @@ def _get_webhook_url(sport: str, channel_type: str) -> str | None:
 
     Args:
         sport: Sport name (e.g. "NFL", "NBA")
-        channel_type: "PICKS" or "RESULTS"
+        channel_type: "PICKS", "RESULTS", "EXTRAS" or "EXTRAS_RESULTS"
 
     Returns:
         Webhook URL string, or None if not configured.
@@ -838,7 +838,7 @@ def send_extras_to_discord(
     bankroll: float,
     sport: str = "NFL",
 ) -> bool:
-    """Post the off-card props for one slate to the extras channel."""
+    """Post the off-card props for one slate to the extras picks channel."""
     url = _get_webhook_url(sport, "EXTRAS")
     if not url:
         logger.debug("Discord not configured for %s extras, skipping", sport)
@@ -883,8 +883,15 @@ def send_extras_results_to_discord(
     alltime_summary: dict[str, Any] | None = None,
     starting_bankroll: float | None = None,
 ) -> bool:
-    """Grading results for the off-card props, in their own channel."""
-    url = _get_webhook_url(sport, "EXTRAS")
+    """
+    Grading results for the off-card props.
+
+    Its own channel (DISCORD_WEBHOOK_<SPORT>_EXTRAS_RESULTS), separate from
+    both the extras PICKS channel and the main results channel — picks and
+    results split the same way for the card, and the main results channel
+    still reports only what was offered.
+    """
+    url = _get_webhook_url(sport, "EXTRAS_RESULTS")
     if not url:
         return False
     if "total_bets" not in summary:
