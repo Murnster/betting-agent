@@ -440,6 +440,13 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
     line move REFRESHES the existing ungraded pick (odds, edge, sizing, line)
     instead of being dropped as a duplicate. Graded picks are settled bets and
     are never touched — those log a skip.
+
+    A re-run is also a NEW OFFER: for every game it prices, any ungraded pick
+    still flagged on_card that it did not re-select is taken off the card (see
+    _retire_superseded). Without that, two card runs on one game left both
+    cards live — on the 2026 opener the Sep 8 and Sep 9 runs between them
+    carded two straight overs, two ladder hits and George Holani on two
+    markets, and the results post counted all of it as offered picks.
     """
     if not candidates:
         return
@@ -473,11 +480,13 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
         added = 0
         updated = 0
         skipped = 0
+        live_keys: set[tuple] = set()  # what this run's card offers
         for i, c in enumerate(candidates):
             if i not in resolved_ids:
                 continue
             db_game_id = resolved_ids[i]
             key = _key(db_game_id, c)
+            live_keys.add(key)
 
             row = existing.get(key)
             if row is not None:
@@ -520,11 +529,42 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
             existing[key] = pick
             added += 1
 
-    if added or updated or skipped:
+        retired = _retire_superseded(existing_rows, live_keys)
+
+    if added or updated or skipped or retired:
         logger.info(
-            "Saved %d new picks, refreshed %d ungraded, skipped %d settled",
-            added, updated, skipped,
+            "Saved %d new picks, refreshed %d ungraded, skipped %d settled, "
+            "took %d superseded pick(s) off the card",
+            added, updated, skipped, retired,
         )
+
+
+def _retire_superseded(existing_rows: list[Pick], live_keys: set[tuple]) -> int:
+    """
+    Clear on_card on the ungraded picks this run's card replaced.
+
+    A card is an offer with a shelf life. `existing_rows` covers only the games
+    this run priced, so re-pricing a game replaces that game's whole card:
+    anything ungraded still flagged on_card that the run did not re-select was
+    not on the card the user was just shown, and must stop counting in the
+    record and the bankroll (roi.carded_only reports on_card picks only). That
+    covers a section the run dropped (`--no-ladder`, or nothing clearing the
+    floors), a board whose best entry changed, and the same player carded on a
+    different market than last time.
+
+    The rows stay in the table, still graded, as off-card model evaluation.
+    Settled picks are history and are never touched.
+    """
+    retired = 0
+    for row in existing_rows:
+        if not row.on_card or row.result is not None:
+            continue
+        key = (row.game_id, row.bet_type, row.player or "", row.market or "",
+               row.strategy or "")
+        if key not in live_keys:
+            row.on_card = False
+            retired += 1
+    return retired
 
 
 def _market_label(market: str | None) -> str:

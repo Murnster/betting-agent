@@ -19,6 +19,7 @@ import logging
 
 from betting_agent.accounting.grader import _calculate_pnl
 from betting_agent.accounting.ledger import equity_curve, ledger_summary
+from betting_agent.accounting.roi import carded_only
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.session import get_session
 
@@ -41,6 +42,10 @@ def cmd_list(args) -> None:
             q = q.filter(Pick.result.is_(None))
         if args.sport:
             q = q.filter(Pick.sport == args.sport.upper())
+        # A stake can only have been placed on a pick that was on a card.
+        on_card = None if args.all_picks else carded_only(args.sport)
+        if on_card is not None:
+            q = q.filter(Pick.on_card.is_(on_card))
         rows = q.order_by(Pick.pick_date.desc(), Pick.id).limit(args.limit).all()
 
         if not rows:
@@ -75,7 +80,11 @@ def cmd_set(args) -> None:
 
 
 def cmd_ledger(args) -> None:
-    curve = equity_curve(sport=args.sport.upper() if args.sport else None)
+    # Same scope as the results post: only the picks that made a card were
+    # ever offered, so only those move the bankroll (roi.carded_only).
+    sport = args.sport.upper() if args.sport else None
+    on_card = None if args.all_picks else carded_only(sport)
+    curve = equity_curve(sport=sport, on_card=on_card)
     if not curve:
         print("No settled picks yet.")
         return
@@ -84,7 +93,7 @@ def cmd_ledger(args) -> None:
     for e in curve[-args.limit:]:
         print(f"{str(e.event_date):<11} {e.pick_id:>5} {e.bet_type:<9} "
               f"{e.stake:>7.2f} {e.result:<6} {e.pnl:>+8.2f} {e.equity:>9.2f}")
-    s = ledger_summary(sport=args.sport.upper() if args.sport else None)
+    s = ledger_summary(sport=sport, on_card=on_card)
     print(f"\nStart ${s['starting_bankroll']:,.2f} → ${s['current_bankroll']:,.2f} "
           f"({s['total_pnl']:+,.2f}) | peak ${s['peak_equity']:,.2f} | "
           f"max drawdown ${s['max_drawdown']:,.2f} | {s['settled_picks']} picks")
@@ -98,6 +107,8 @@ def main() -> None:
     p_list.add_argument("--all", action="store_true", help="Include settled picks")
     p_list.add_argument("--sport", type=str, default=None)
     p_list.add_argument("--limit", type=int, default=40)
+    p_list.add_argument("--all-picks", action="store_true",
+                        help="Include off-card picks (model evaluation, never offered)")
     p_list.set_defaults(func=cmd_list)
 
     p_set = sub.add_parser("set", help="Record the stake actually placed")
@@ -111,6 +122,8 @@ def main() -> None:
     p_ledger = sub.add_parser("ledger", help="Equity curve from settled picks")
     p_ledger.add_argument("--sport", type=str, default=None)
     p_ledger.add_argument("--limit", type=int, default=30)
+    p_ledger.add_argument("--all-picks", action="store_true",
+                          help="Include off-card picks (model evaluation, never offered)")
     p_ledger.set_defaults(func=cmd_ledger)
 
     args = parser.parse_args()

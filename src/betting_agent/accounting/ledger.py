@@ -65,6 +65,7 @@ def equity_curve(
     starting_bankroll: float | None = None,
     strategy: str | None = None,
     exclude_strategy: str | Sequence[str] | None = None,
+    on_card: bool | None = None,
 ) -> list[LedgerEntry]:
     """
     Every graded pick in settlement order with running equity.
@@ -73,6 +74,9 @@ def equity_curve(
 
     `strategy` restricts the curve to one paper book (the ladder section
     starts from settings.ladder_bankroll); `exclude_strategy` drops it.
+    `on_card=True` charges the bankroll only for the picks that made a card —
+    the ones actually offered. Off-card picks are model evaluation, never
+    money, so they must not move an equity curve (see roi.carded_only).
     """
     if starting_bankroll is None:
         starting_bankroll = starting_bankroll_for(strategy)
@@ -90,6 +94,8 @@ def equity_curve(
         clause = strategy_exclusion(Pick.strategy, exclude_strategy)
         if clause is not None:
             q = q.filter(clause)
+        if on_card is not None:
+            q = q.filter(Pick.on_card.is_(on_card))
         rows = q.all()
         entries_raw = [
             {
@@ -133,16 +139,20 @@ def equity_curve(
 
 
 def current_bankroll(sport: str | None = None, strategy: str | None = None,
-                     exclude_strategy: str | Sequence[str] | None = None) -> float:
+                     exclude_strategy: str | Sequence[str] | None = None,
+                     on_card: bool | None = None) -> float:
     """Starting bankroll plus all graded P&L."""
-    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy)
+    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy,
+                         on_card=on_card)
     return curve[-1].equity if curve else starting_bankroll_for(strategy)
 
 
 def ledger_summary(sport: str | None = None, strategy: str | None = None,
-                   exclude_strategy: str | Sequence[str] | None = None) -> dict[str, Any]:
+                   exclude_strategy: str | Sequence[str] | None = None,
+                   on_card: bool | None = None) -> dict[str, Any]:
     """Headline equity numbers for reports."""
-    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy)
+    curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy,
+                         on_card=on_card)
     start = starting_bankroll_for(strategy)
     if not curve:
         return {

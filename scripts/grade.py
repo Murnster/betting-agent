@@ -14,7 +14,7 @@ from datetime import date, datetime
 
 from betting_agent.accounting.clv import update_clv_for_picks
 from betting_agent.accounting.grader import grade_picks
-from betting_agent.accounting.roi import format_roi_report
+from betting_agent.accounting.roi import carded_only, format_roi_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -87,7 +87,8 @@ def main() -> None:
         logger.warning("CLV update failed: %s", exc)
 
     try:
-        report = format_roi_report(sport=args.sport, season=args.season, since=target_date)
+        report = format_roi_report(sport=args.sport, season=args.season, since=target_date,
+                                   on_card=carded_only(args.sport))
         print(report)
     except Exception as exc:
         logger.error("ROI report failed: %s", exc)
@@ -121,7 +122,13 @@ def main() -> None:
             for sport_name in sport_list:
                 if not is_discord_configured(sport_name, "RESULTS"):
                     continue
-                window = {"graded_since": run_started}
+                # The card is the offer: for NFL the results post and the
+                # all-time recap count only the picks that made a card.
+                # props.py also saves everything else that clears the floors,
+                # and those keep grading, but they were never bettable so they
+                # stay out of the record, the P&L and the bankroll.
+                window = {"graded_since": run_started, "on_card": carded_only(sport_name)}
+                alltime = {"until": until_date, "on_card": carded_only(sport_name)}
                 summary = get_summary(sport=sport_name, **window)
                 if "total_bets" not in summary:
                     continue  # nothing settled for this sport in this run
@@ -146,17 +153,17 @@ def main() -> None:
                 if sport_name in inline_alltime:
                     kwargs = {
                         "alltime_summary": get_summary(sport=sport_name, bet_type="prop", **main,
-                                                       until=until_date)
-                        if sport_name == "NFL" else get_summary(sport=sport_name, until=until_date),
+                                                       **alltime)
+                        if sport_name == "NFL" else get_summary(sport=sport_name, **alltime),
                         "alltime_lean_summary": get_summary(sport=sport_name, bet_type=list(LEAN_BET_TYPES),
-                                                            until=until_date) if sport_name == "NFL" else None,
+                                                            **alltime) if sport_name == "NFL" else None,
                         "alltime_td_summary": get_summary(sport=sport_name, bet_type="prop", market=TD_MARKET,
-                                                          until=until_date) if sport_name == "NFL" else None,
+                                                          **alltime) if sport_name == "NFL" else None,
                         "alltime_ladder_summary": get_summary(sport=sport_name, bet_type="prop",
-                                                              strategy=LADDER_STRATEGY, until=until_date)
+                                                              strategy=LADDER_STRATEGY, **alltime)
                         if sport_name == "NFL" else None,
                         "alltime_overs_summary": get_summary(sport=sport_name, bet_type="prop",
-                                                             strategy=OVERS_STRATEGY, until=until_date)
+                                                             strategy=OVERS_STRATEGY, **alltime)
                         if sport_name == "NFL" else None,
                         "starting_bankroll": settings.starting_bankroll,
                         "ladder_bankroll": settings.ladder_bankroll,
@@ -172,7 +179,8 @@ def main() -> None:
             shared = [s for s in sports_with_results if s not in inline_alltime]
             if shared and is_discord_configured("ALLTIME", "RESULTS"):
                 logger.info("Sending all-time results to Discord...")
-                alltime = {s: get_summary(sport=s, until=until_date) for s in shared}
+                alltime = {s: get_summary(sport=s, until=until_date, on_card=carded_only(s))
+                           for s in shared}
                 send_alltime_to_discord(alltime, settings.starting_bankroll, as_of_date=graded_date)
         except Exception as exc:
             logger.warning("Discord notification failed: %s", exc)

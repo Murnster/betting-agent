@@ -366,6 +366,22 @@ applied):
   section), so the game line is a **lean**: Pinnacle fair price → bettable
   book's line → best-edge side (`intelligence/game_lean.py`), labelled LEAN,
   saved on paper, closing line captured by `--closing`.
+- [x] **Only carded picks count in the record (2026-09-10, user: "the results
+  channel should not be showing results that we weren't offered to pick on
+  ... nor should it be counting it in our all-time results").** The results
+  post, the all-time recap, the breakdown and every bankroll line now filter
+  on `Pick.on_card` (`roi.carded_only(sport)` → True for NFL only, so the
+  NBA/NHL history, whose rows all predate the column, is unchanged).
+  Off-card picks keep saving and grading as model evaluation —
+  `report.py --off-card` reads them, `--all-picks` reads both. And a re-run
+  of a game's card now retires the previous one (`_retire_superseded()`):
+  the 2026 opener was carded twice (a manual Sep 8 run, then the Sep 9 cron)
+  and both cards stayed live, so the Sep 10 results post reported 16 graded
+  picks against a card of 6 — two straight overs, two ladder hits and George
+  Holani on two markets. Rows 230/238/239 were backfilled to `on_card=false`.
+  **Open:** off-card picks are still sized and staked in the paper ledger's
+  `recommended_bet`; nothing reads that now, but if the off-card set is ever
+  reported on its own, decide whether it gets its own bankroll.
 - [ ] **Lean CLV experiment — decide after the 2026 regular season.** Query
   `picks where bet_type in ('moneyline','spread','total')`: avg `clv` where
   the line held, line moves for/against otherwise, by `edge` bucket. Promote

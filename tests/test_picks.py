@@ -909,3 +909,67 @@ class TestGuardrails:
         )
         home_ml = [c for c in candidates if c.bet_type == "moneyline" and c.pick_side == "TeamA"]
         assert len(home_ml) == 0, "Huge underdog pick (+750) should be rejected by guardrails"
+
+
+class TestSupersededCards:
+    """
+    A second card run on the same game replaces the first card.
+
+    The 2026 opener ran the card twice (a manual Sep 8 run, then the Sep 9
+    cron). Both cards stayed flagged on_card, so the results post reported two
+    straight overs, two ladder hits and George Holani on two markets as picks
+    the user had been offered.
+    """
+
+    @staticmethod
+    def _row(**kw):
+        row = SimpleNamespace(
+            game_id=45203, bet_type="prop", player=None, market=None, strategy=None,
+            on_card=True, result=None,
+        )
+        for k, v in kw.items():
+            setattr(row, k, v)
+        return row
+
+    @staticmethod
+    def _key(row):
+        return (row.game_id, row.bet_type, row.player or "", row.market or "",
+                row.strategy or "")
+
+    def test_previous_card_is_retired_when_the_game_is_repriced(self):
+        from betting_agent.intelligence.picks import _retire_superseded
+
+        holani_yds = self._row(player="George Holani", market="player_reception_yds")
+        doubs_over = self._row(player="Romeo Doubs", market="player_reception_yds",
+                               strategy="overs")
+        maye_ladder = self._row(player="Drake Maye", market="player_rush_yds_alternate",
+                                strategy="ladder")
+        # What the second run carded instead.
+        holani_rec = self._row(player="George Holani", market="player_receptions")
+        kupp_over = self._row(player="Cooper Kupp", market="player_receptions",
+                              strategy="overs")
+        rows = [holani_yds, doubs_over, maye_ladder, holani_rec, kupp_over]
+        live = {self._key(holani_rec), self._key(kupp_over)}
+
+        assert _retire_superseded(rows, live) == 3
+        assert not holani_yds.on_card      # same player, different market
+        assert not doubs_over.on_card      # the game's best over changed
+        assert not maye_ladder.on_card     # the ladder section changed
+        assert holani_rec.on_card and kupp_over.on_card
+
+    def test_settled_and_off_card_picks_are_left_alone(self):
+        from betting_agent.intelligence.picks import _retire_superseded
+
+        settled = self._row(player="AJ Barner", market="player_receptions", result="win")
+        off_card = self._row(player="A.J. Brown", market="player_receptions", on_card=False)
+
+        assert _retire_superseded([settled, off_card], set()) == 0
+        assert settled.on_card       # history is never rewritten
+        assert off_card.on_card is False
+
+    def test_a_rerun_that_reselects_the_same_pick_keeps_it_carded(self):
+        from betting_agent.intelligence.picks import _retire_superseded
+
+        held = self._row(player="AJ Barner", market="player_anytime_td")
+        assert _retire_superseded([held], {self._key(held)}) == 0
+        assert held.on_card

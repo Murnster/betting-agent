@@ -62,3 +62,41 @@ def test_get_summary_uses_total_wagered_for_roi(monkeypatch):
     assert summary["total_wagered"] == 60.0
     assert summary["total_pnl"] == 10.0
     assert summary["roi_pct"] == 16.67
+
+
+def test_carded_only_is_true_for_nfl_and_none_elsewhere():
+    from betting_agent.accounting.roi import carded_only
+
+    assert carded_only("NFL") is True
+    assert carded_only("nfl") is True
+    assert carded_only("NBA") is None
+    assert carded_only(None) is None
+
+
+def test_get_summary_filters_to_carded_picks(monkeypatch):
+    """Off-card picks are model evaluation, never part of a reported record."""
+    from betting_agent.accounting import roi as roi_mod
+
+    seen: list[str] = []
+
+    class _FilterQuery(_Query):
+        def filter(self, *clauses, **kwargs):
+            seen.extend(str(c) for c in clauses)
+            return self
+
+    class _FilterSession:
+        def query(self, *_args, **_kwargs):
+            return _FilterQuery([_Pick(result="win", pnl=5.0, recommended_bet=10.0, edge=0.1)])
+
+    @contextmanager
+    def _fake_session():
+        yield _FilterSession()
+
+    monkeypatch.setattr(roi_mod, "get_session", _fake_session)
+
+    roi_mod.get_summary(sport="NFL", on_card=True)
+    assert any("picks.on_card IS true" in f or "picks.on_card = true" in f for f in seen), seen
+
+    seen.clear()
+    roi_mod.get_summary(sport="NBA", on_card=None)
+    assert not any("on_card" in f for f in seen), seen

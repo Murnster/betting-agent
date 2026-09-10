@@ -21,6 +21,23 @@ def _pct(num: int, denom: int) -> float:
 # positive), reported separately from the prop picks that carry the money.
 LEAN_BET_TYPES = ("moneyline", "spread", "total")
 
+#: Sports where the card IS the offer: only picks that made a card count in the
+#: reported record, ROI and bankroll. props.py saves every candidate that clears
+#: the floors, but the ones that never reached a card were never offered to bet
+#: — they stay in the table (and keep grading) as model evaluation only.
+CARDED_SPORTS = frozenset({"NFL"})
+
+
+def carded_only(sport: str | None) -> bool | None:
+    """
+    The `on_card` filter a sport's reports should run with.
+
+    True  -> carded picks only (the offer).
+    None  -> every saved pick (sports with no card, e.g. the NBA/NHL game
+             picks, whose rows all predate on_card and are all False).
+    """
+    return True if (sport or "").upper() in CARDED_SPORTS else None
+
 
 def get_summary(
     sport: str | None = None,
@@ -33,6 +50,7 @@ def get_summary(
     exclude_market: str | None = None,
     strategy: str | None = None,
     exclude_strategy: str | list[str] | tuple[str, ...] | None = None,
+    on_card: bool | None = None,
 ) -> dict[str, Any]:
     """
     Aggregate ROI report.
@@ -50,6 +68,11 @@ def get_summary(
     since/until filter on pick_date (the day the pick was made). graded_since
     filters on graded_at instead — the daily results post uses it, because an
     NFL pick is made days before its game and graded days after.
+
+    on_card=True reports only the picks that made a card — the ones actually
+    offered. Off-card picks stay saved and graded for model evaluation but do
+    not belong in a record or a bankroll. Use carded_only(sport) to pick the
+    right value for a sport; None counts every saved pick.
     """
     from betting_agent.db.models import Game
     with get_session() as session:
@@ -78,6 +101,8 @@ def get_summary(
         if exclude_strategy:
             from betting_agent.accounting.ledger import strategy_exclusion
             q = q.filter(strategy_exclusion(Pick.strategy, exclude_strategy))
+        if on_card is not None:
+            q = q.filter(Pick.on_card.is_(on_card))
 
         picks = q.all()
 
@@ -142,9 +167,12 @@ def get_graded_picks_detail(
     since: date | None = None,
     until: date | None = None,
     graded_since: datetime | None = None,
+    on_card: bool | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return per-pick detail for graded picks, joined with Game for team names.
+
+    on_card=True lists only the picks that made a card (see get_summary).
     """
     from betting_agent.db.models import Game
     with get_session() as session:
@@ -159,6 +187,8 @@ def get_graded_picks_detail(
             q = q.filter(Pick.pick_date <= until)
         if graded_since is not None:
             q = q.filter(Pick.graded_at >= graded_since)
+        if on_card is not None:
+            q = q.filter(Pick.on_card.is_(on_card))
 
         rows = q.all()
 
@@ -189,13 +219,14 @@ def get_breakdown_by_bet_type(
     until: date | None = None,
     season: int | None = None,
     graded_since: datetime | None = None,
+    on_card: bool | None = None,
 ) -> list[dict]:
     """Per-bet-type breakdown."""
     bet_types = ["moneyline", "spread", "total", "prop"]
     rows = []
     for bt in bet_types:
         summary = get_summary(sport=sport, since=since, until=until, bet_type=bt, season=season,
-                              graded_since=graded_since)
+                              graded_since=graded_since, on_card=on_card)
         if "total_bets" in summary and summary["total_bets"] > 0:
             rows.append({"bet_type": bt, **summary})
     return rows
@@ -205,18 +236,28 @@ def format_roi_report(
     sport: str | None = None,
     since: date | None = None,
     season: int | None = None,
+    on_card: bool | None = None,
 ) -> str:
-    """Human-readable ROI report."""
-    summary = get_summary(sport=sport, since=since, season=season)
+    """
+    Human-readable ROI report.
+
+    on_card scopes the report exactly as in get_summary: True = the picks that
+    were offered on a card, False = the off-card evaluation set, None = both.
+    Callers pass carded_only(sport) for a sport's normal scope.
+    """
+    summary = get_summary(sport=sport, since=since, season=season, on_card=on_card)
     if "message" in summary:
         return f"\n{summary['message']}\n"
 
-    breakdown = get_breakdown_by_bet_type(sport=sport, since=since, season=season)
+    breakdown = get_breakdown_by_bet_type(sport=sport, since=since, season=season,
+                                          on_card=on_card)
 
     lines = [
         "",
         "=" * 60,
-        f"  ROI REPORT — Sport: {sport or 'ALL'} | Season: {season or 'ALL'}",
+        f"  ROI REPORT — Sport: {sport or 'ALL'} | Season: {season or 'ALL'}"
+        + {True: "  (picks offered on a card)",
+           False: "  (OFF-CARD picks — model evaluation, never offered)"}.get(on_card, ""),
         "=" * 60,
         f"  Total bets:   {summary['total_bets']}",
         f"  Record:       {summary['wins']}-{summary['losses']}-{summary['pushes']}"
@@ -241,7 +282,7 @@ def format_roi_report(
         )
 
     from betting_agent.accounting.ledger import SIDE_BOOKS, ledger_summary
-    ledger = ledger_summary(sport=sport, exclude_strategy=SIDE_BOOKS)
+    ledger = ledger_summary(sport=sport, exclude_strategy=SIDE_BOOKS, on_card=on_card)
     if ledger["settled_picks"]:
         lines += [
             "",
@@ -253,7 +294,7 @@ def format_roi_report(
             f"over {ledger['settled_picks']} settled picks",
         ]
     for strategy, label in (("ladder", "Ladder hits"), ("overs", "Straight overs")):
-        side = ledger_summary(sport=sport, strategy=strategy)
+        side = ledger_summary(sport=sport, strategy=strategy, on_card=on_card)
         if side["settled_picks"]:
             lines += [
                 "",

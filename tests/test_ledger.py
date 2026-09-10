@@ -91,3 +91,33 @@ def test_empty_ledger(monkeypatch):
     assert s["current_bankroll"] == 100.0
     assert s["settled_picks"] == 0
     assert ledger_mod.current_bankroll() == 100.0
+
+
+def test_equity_curve_can_charge_only_carded_picks(monkeypatch):
+    """Off-card picks are never money, so they must not move the bankroll."""
+    seen: list[str] = []
+
+    class _CapturingQuery(_Query):
+        def filter(self, *clauses, **kwargs):
+            seen.extend(str(c) for c in clauses)
+            return self
+
+    class _CapturingSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, *a, **k):
+            return _CapturingQuery(self._rows)
+
+    @contextmanager
+    def fake_session():
+        yield _CapturingSession([(_Pick(1, +9.09), _Game(date(2026, 9, 10)))])
+
+    monkeypatch.setattr(ledger_mod, "get_session", fake_session)
+
+    ledger_mod.equity_curve(starting_bankroll=100.0, on_card=True)
+    assert any("on_card" in f for f in seen), seen
+
+    seen.clear()
+    ledger_mod.equity_curve(starting_bankroll=100.0)
+    assert not any("on_card" in f for f in seen), seen
