@@ -478,6 +478,50 @@ def _result_line(d: dict[str, Any], leans_labelled: bool = False) -> str:
     return f"`{result_tag}`  {bet_desc} ({odds_str}) \u2014 {matchup} \u2014 {pnl_str}"
 
 
+def _result_section(d: dict[str, Any], leans_labelled: bool) -> str:
+    """Which headline line a graded pick belongs under."""
+    if d.get("bet_type") == "prop":
+        if d.get("market") == TD_MARKET:
+            return "td"
+        if d.get("strategy") == LADDER_STRATEGY:
+            return "ladder"
+        if d.get("strategy") == OVERS_STRATEGY:
+            return "overs"
+    elif leans_labelled and d.get("bet_type") in LEAN_BET_TYPES:
+        return "lean"
+    return "picks"
+
+
+# Headline order, so the pick list reads in the same order as the records above it.
+_RESULT_SECTIONS = (
+    ("picks", "**Picks:**"),
+    ("lean", "**Leans:**"),
+    ("td", "**TD scorers:**"),
+    ("overs", "**Straight overs:**"),
+    ("ladder", "**Ladder hits:**"),
+)
+
+
+def _result_lines(pick_details: list[dict[str, Any]], leans_labelled: bool) -> list[str]:
+    """
+    The graded picks as sectioned lines, one section per headline record.
+
+    Tagging each line (LEAN/TD/OVER/LADDER) made the sections *distinguishable*
+    but left the main card's props interleaved with three paper books that have
+    their own bankrolls and their own headline records. Group them instead.
+    """
+    grouped: dict[str, list[str]] = {}
+    for d in pick_details:
+        section = _result_section(d, leans_labelled)
+        grouped.setdefault(section, []).append(_result_line(d, leans_labelled=leans_labelled))
+
+    lines: list[str] = []
+    for key, header in _RESULT_SECTIONS:
+        if grouped.get(key):
+            lines += ["", header, *grouped[key]]
+    return lines
+
+
 def _build_results_embed(
     summary: dict[str, Any],
     sport: str,
@@ -536,10 +580,7 @@ def _build_results_embed(
         lines.append(ladder)
 
     if pick_details:
-        lines.append("")
-        lines.append("**Picks:**")
-        lines.extend(_result_line(d, leans_labelled=lean_summary is not None)
-                     for d in pick_details)
+        lines += _result_lines(pick_details, leans_labelled=lean_summary is not None)
 
     date_str = str(graded_date) if graded_date else ""
     desc = f"{date_str}\n\n" + "\n".join(lines) if date_str else "\n".join(lines)

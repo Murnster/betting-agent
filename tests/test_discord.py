@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 
 from betting_agent.intelligence.picks import BetCandidate
+from betting_agent.sports.nfl.td_props import TD_MARKET
 from betting_agent.notifications.discord import (
     COLOR_BLUE,
     COLOR_GREEN,
@@ -645,6 +646,52 @@ def test_results_embed_reports_leans_as_paper_not_bets():
     assert "**CLV:** +2.20% on 1" in desc
     assert "LEAN Seattle Seahawks Moneyline" in desc
     assert "A.J. Brown" in desc and "Record:** 1-1-0" in desc
+
+
+def test_results_embed_groups_picks_by_headline_section():
+    """Each headline record gets its own list — the main card's props are never
+    interleaved with the leans or the side books' paper picks."""
+    from betting_agent.notifications.discord import _build_results_embed
+    def _d(**kw):
+        base = {"pick_side": "over", "bet_type": "prop", "odds": -110, "result": "loss",
+                "pnl": -1.0, "home_team": "LA", "away_team": "SF", "player": "P",
+                "market": "player_reception_yds", "line": 20.5, "strategy": None}
+        return {**base, **kw}
+    details = [
+        _d(player="Ladder Guy", strategy="ladder", line=59.5),
+        _d(player=None, bet_type="total", pick_side="under", market=None, line=None),
+        _d(player="Over Guy", strategy="overs"),
+        _d(player="TD Guy", market=TD_MARKET, pick_side="yes", line=0.5),
+        _d(player="Prop Guy", result="win", pnl=1.7),
+    ]
+    desc = _build_results_embed(
+        _nfl_prop_summary(), "NFL", graded_date=date(2026, 9, 11), pick_details=details,
+        lean_summary=_nfl_lean_summary(), td_summary=_nfl_prop_summary(),
+        ladder_summary=_nfl_prop_summary(), overs_summary=_nfl_prop_summary(),
+    )["description"]
+    for header, player in (("**Picks:**", "Prop Guy"), ("**Leans:**", "LEAN under Total"),
+                           ("**TD scorers:**", "TD Guy"), ("**Straight overs:**", "Over Guy"),
+                           ("**Ladder hits:**", "Ladder Guy")):
+        assert header in desc, header
+        # the player sits under its own header and before the next one
+        section = desc.split(header, 1)[1].split("\n\n", 1)[0]
+        assert player in section, f"{player} not under {header}"
+    # sections run in the headline's order
+    order = [desc.index(h) for h in ("**Picks:**", "**Leans:**", "**TD scorers:**",
+                                     "**Straight overs:**", "**Ladder hits:**")]
+    assert order == sorted(order)
+
+
+def test_results_embed_unsectioned_when_no_side_books():
+    """A plain prop day is still one flat Picks list."""
+    from betting_agent.notifications.discord import _build_results_embed
+    details = [{"pick_side": "under", "bet_type": "prop", "odds": -110, "result": "win",
+                "pnl": 9.09, "home_team": "SEA", "away_team": "NE", "player": "A.J. Brown",
+                "market": "player_receptions", "line": 4.5, "strategy": None}]
+    desc = _build_results_embed(_nfl_prop_summary(), "NFL", pick_details=details)["description"]
+    assert "**Picks:**" in desc
+    for header in ("**Leans:**", "**TD scorers:**", "**Straight overs:**", "**Ladder hits:**"):
+        assert header not in desc
 
 
 def test_results_embed_without_leans_is_unchanged_shape():
