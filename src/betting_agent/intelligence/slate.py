@@ -32,6 +32,11 @@ WINDOW_LEAN_CAP = 3
 #: Sunday kickoffs before this ET hour are international games. No domestic
 #: Sunday game starts before 13:00 ET; the international ones start at 9:30.
 INTERNATIONAL_BEFORE_ET = 12
+#: Kickoffs at or after this ET hour open the night window on a day that also
+#: has afternoon windows (Sunday, Thanksgiving). Monday and the Wednesday
+#: opener kick at 20:15-20:35 ET but are their day's only game, so they are a
+#: single unsplit slate and this boundary never applies to them.
+NIGHT_FROM_ET = 19
 
 
 def _kickoff_et(commence_time: str | datetime) -> datetime:
@@ -78,6 +83,22 @@ def slate_for(commence_time: str | datetime) -> tuple[str, str, date]:
     else:
         part, label = "0", k.strftime("%A")
     return f"{k.date().isoformat()}-{part}", label, k.date()
+
+
+def is_night_slate(commence_time: str | datetime) -> bool:
+    """
+    Whether a kickoff belongs to the night window of a multi-window day.
+
+    True for Sunday Night and Thanksgiving night, false for everything else
+    including Monday/Wednesday night — those are their day's only game, so
+    `slate_for` never splits them out and their card run already fires in the
+    evening.
+
+    The Sunday midday card run passes `--skip-night` so Sunday Night is left
+    to the 19:00 run and priced two hours out instead of eight, like every
+    other primetime game (user's call, Sep 13 2026).
+    """
+    return slate_for(commence_time)[0].endswith("-3-night")
 
 
 @dataclass

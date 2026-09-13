@@ -9,7 +9,7 @@ What a game day looks like once this is installed:
 
 | When (local) | Job | What it does | Cost |
 | --- | --- | --- | --- |
-| 12:45 Fri/Sat/Sun, 19:00 Mon-Thu | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds **one card per slate** (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
+| 12:45 Fri/Sat/Sun (Sunday afternoon only), 19:00 Sun-Thu | `nfl_loop.sh card` | Fits the models, fetches today's slate, builds **one card per slate** (leans, TD scorer, props, straight overs, ladder hits), runs the Opus validator, saves picks, posts to Discord | 6 Odds API credits per game + 3 for the leans; ~$1 Opus per game |
 | Hourly 09:00–23:00 daily | `nfl_loop.sh closing` | Closing price/line on held picks kicking off in the next 90 min → CLV | credits only for games with held picks |
 | 09:00 daily | `nfl_loop.sh grade` | Finalizes games from nflverse, grades props, posts results + all-time recap | free |
 | 03:15 daily | `nfl_loop.sh backup` | `pg_dump` to `backups/postgres/`, prunes >30 days | free |

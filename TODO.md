@@ -559,3 +559,26 @@ QB change mid-week), not for re-deriving the model.
       Options: a `PROP_EDGE_CAPS` entry for `player_reception_yds` (~30%),
       or split graded results by claimed-edge band (`edge > 0.30`) after
       4–6 weeks and let the season decide. User's call.
+
+- [ ] **Per-section card caps — review once a few weeks are graded (deferred
+      2026-09-13, user's call: "let week 1 continue as it is and evaluate
+      this later").** All five card sections size off the same two constants
+      in `intelligence/slate.py`: props, straight overs and ladder hits each
+      take `slate.prop_cap` (4 primetime / 3 per Sunday window), while the
+      game lean and the anytime-TD scorer each take `slate.lean_cap` (1 / 3).
+      That makes a primetime card up to 14 entries on a single game and a
+      Sunday window up to 15. Two things to weigh with real results:
+      (a) `PRIMETIME_PROP_CAP = 4` was justified by the walk-forward eval on
+      the *main receiving props* (no reliable edge ordering inside a week's
+      top ten), and overs/ladder inherit that number without the equivalent
+      evidence — `ladder_diagnostic.py` has receptions over-claiming 10-20pp
+      everywhere and the floors sit deliberately below where it found edge
+      real, so the widest sections are the least validated ones;
+      (b) the TD board is the opposite case — a measured +10% flat ROI in the
+      8-15% window — yet it gets the *lean* cap, so one slot on a primetime
+      card against four apiece for the two experimental pools. Also unchecked:
+      `_apply_same_game_correlation_adjustment()` runs within each section's
+      candidate list separately, so a primetime card's props, overs, ladder
+      and TD legs are all on one game without any cross-section scaling
+      (separate bankrolls, so this is about correlated outcomes, not stake
+      concentration). Revisit with the TD window and the ladder review.

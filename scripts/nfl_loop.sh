@@ -43,15 +43,20 @@ MAX_PICKS="${NFL_MAX_PICKS:-10}"
 # 9:30 ET international game — without the window it would price the whole
 # Sunday slate hours before the midday run does it again at fresher numbers.
 WITHIN_HOURS="${NFL_WITHIN_HOURS:-}"
+# Optional: leave the day's night window to the evening run (props.py
+# --skip-night). Set on the Sunday midday run so Sunday Night is carded at
+# 19:00 alongside Monday/Thursday primetime rather than eight hours early.
+SKIP_NIGHT="${NFL_SKIP_NIGHT:-}"
 
 cd "$PROJECT_ROOT"
 stamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 case "${1:-}" in
   card)
-    echo "[$(stamp)] card: today's slate (up to $SUGGEST games by model heat)${WITHIN_HOURS:+, kicking off within ${WITHIN_HOURS}h}"
+    echo "[$(stamp)] card: today's slate (up to $SUGGEST games by model heat)${WITHIN_HOURS:+, kicking off within ${WITHIN_HOURS}h}${SKIP_NIGHT:+, excluding the night window}"
     "$UV_BIN" run python scripts/props.py --today --save --suggest "$SUGGEST" \
-        --max-picks "$MAX_PICKS" ${WITHIN_HOURS:+--within-hours "$WITHIN_HOURS"}
+        --max-picks "$MAX_PICKS" ${WITHIN_HOURS:+--within-hours "$WITHIN_HOURS"} \
+        ${SKIP_NIGHT:+--skip-night}
     ;;
   closing)
     echo "[$(stamp)] closing: held picks kicking off inside the window"
@@ -73,12 +78,18 @@ case "${1:-}" in
     cat <<EOF
 # ---- betting-agent NFL props loop (docs/NFL_SETUP.md) ----
 SHELL=/bin/bash
-# One card run per day covers every slate that day (props.py --today cards each
-# slate in one pass and skips games already kicked off), so the only thing that
-# matters is running before the day's FIRST kickoff.
-# Sun/Fri/Sat: the card at 12:45 local, before the 1pm ET window (Christmas
-# Friday and the December Saturday doubleheaders start in the afternoon).
-45 12 * * 0,5,6   $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# A card run covers every slate of the day that has not kicked off yet
+# (props.py --today cards each slate in one pass), so what matters is that a
+# run fires before each window — and not so far before that it prices a game
+# on stale numbers when a later run could do it for the same credits.
+# Fri/Sat: one card at 12:45 local. Their games are a single unsplit slate
+# whatever the hour (Christmas Friday, the December Saturday doubleheaders).
+45 12 * * 5,6     $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Sunday afternoon: the card at 12:45 local, before the 1pm ET window, for the
+# early and late windows only. Sunday Night is excluded and left to the 19:00
+# run below — carding a 20:20 ET game at 11:45 ET meant an eight-hour-old
+# price on the one game that could have had a two-hour-old one (user, Sep 13).
+45 12 * * 0       NFL_SKIP_NIGHT=1 $PROJECT_ROOT/scripts/nfl_loop.sh card >> $LOG_DIR/nfl_card.log 2>&1
 # Sunday international game (London/Dublin/Berlin/Madrid) kicks at 9:30 ET =
 # 10:30 local, BEFORE the 12:45 run — which then drops it as already started,
 # so it got no card at all. Its own run at 08:45 local (07:45 ET), windowed to
@@ -90,9 +101,13 @@ SHELL=/bin/bash
 # windowed to 10 hours — on any other Thursday the only game is at 20:15 ET,
 # 12.5 hours out, so this exits free and the 19:00 run does the work.
 45 8  * * 4       NFL_WITHIN_HOURS=10 $PROJECT_ROOT/scripts/nfl_loop.sh card >> $LOG_DIR/nfl_card.log 2>&1
-# Mon/Tue/Wed/Thu primetime: the card at 19:00 local. Wednesday is not a typo —
-# the 2026 season opens on one (Sep 9 NE@SEA) and week 12 has another.
-0  19 * * 1,2,3,4 $PROJECT_ROOT/scripts/nfl_loop.sh card    >> $LOG_DIR/nfl_card.log 2>&1
+# Primetime, every night that has one: the card at 19:00 local (18:00 ET).
+# Sunday is in the list so Sunday Night is carded here, ~2h before its 20:20 ET
+# kickoff; the afternoon games have already started by then, so --today drops
+# them and this run prices only the night game. Wednesday is not a typo — the
+# 2026 season opens on one (Sep 9 NE@SEA) and week 12 has another. Free on any
+# night with no game.
+0  19 * * 0,1,2,3,4 $PROJECT_ROOT/scripts/nfl_loop.sh card  >> $LOG_DIR/nfl_card.log 2>&1
 # Closing prices, hourly, every day (the events call is free and nothing is
 # fetched unless a held pick kicks off inside the window)
 0  9-23 * * *     $PROJECT_ROOT/scripts/nfl_loop.sh closing >> $LOG_DIR/nfl_closing.log 2>&1

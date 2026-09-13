@@ -61,11 +61,12 @@ from betting_agent.intelligence.kelly import recommended_bet
 from betting_agent.intelligence.game_lean import REFERENCE_BOOK, fetch_game_lines, game_leans
 from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
 from betting_agent.intelligence.slate import (
-    Slate,
     candidates_in_slate,
     cap_per_slate,
     group_events_by_slate,
+    is_night_slate,
     select_card,
+    Slate,
 )
 from betting_agent.sports.nfl.props import (
     ALTERNATE_MARKETS,
@@ -252,7 +253,8 @@ def _choose_events(ranked: list[tuple[dict, int, float]]) -> list[dict]:
 
 
 def _events_commencing_today(events: list[dict], now: datetime | None = None,
-                             within_hours: float | None = None) -> list[dict]:
+                             within_hours: float | None = None,
+                             skip_night: bool = False) -> list[dict]:
     """
     Games whose kickoff falls on the LOCAL calendar day and has not started.
 
@@ -269,6 +271,12 @@ def _events_commencing_today(events: list[dict], now: datetime | None = None,
     other thirteen games, which the midday run will price at fresher numbers
     for the same credits. Nothing is lost by excluding them: the midday run
     then skips the international game, which has already kicked off.
+
+    `skip_night` drops the night window of a multi-window day (Sunday Night,
+    Thanksgiving night). Same argument one window later: the Sunday midday run
+    would otherwise price a 20:20 ET game eight hours out, while the 19:00 run
+    that already cards Monday/Thursday primetime prices it two hours out off
+    the same credits.
     """
     now = (now or datetime.now()).astimezone()
     today = now.date()
@@ -284,6 +292,8 @@ def _events_commencing_today(events: list[dict], now: datetime | None = None,
         if kickoff.astimezone().date() != today or kickoff <= now:
             continue
         if cutoff is not None and kickoff > cutoff:
+            continue
+        if skip_night and is_night_slate(kickoff):
             continue
         out.append(e)
     return out
@@ -991,6 +1001,12 @@ def main() -> None:
                              "The Sunday 9:30 ET international game needs its own early "
                              "run; this keeps that run from spending credits on the games "
                              "the midday run will price at fresher numbers.")
+    parser.add_argument("--skip-night", action="store_true",
+                        help="With --today, leave the day's night window (Sunday "
+                             "Night, Thanksgiving night) to the evening card run, "
+                             "which prices it hours closer to kickoff for the same "
+                             "credits. No effect on Monday/Wednesday night, which "
+                             "are their day's only slate.")
     parser.add_argument("--today", action="store_true",
                         help="Only games kicking off today (local time). Made "
                              "for a daily cron job: off-days exit immediately "
@@ -1040,10 +1056,13 @@ def main() -> None:
         if not upcoming:
             raise SystemExit("No upcoming NFL events — check ODDS_API_KEY / season timing.")
         if args.today:
-            upcoming = _events_commencing_today(upcoming, within_hours=args.within_hours)
+            upcoming = _events_commencing_today(upcoming,
+                                                within_hours=args.within_hours,
+                                                skip_night=args.skip_night)
             if not upcoming:
                 window = (f" kicking off in the next {args.within_hours:g}h"
                           if args.within_hours else "")
+                window += " outside the night window" if args.skip_night else ""
                 print(f"No NFL games today{window} — nothing fetched, no credits spent.")
                 return
 

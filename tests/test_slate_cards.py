@@ -20,6 +20,7 @@ from betting_agent.intelligence.slate import (
     WINDOW_PROP_CAP,
     cap_per_slate,
     group_events_by_slate,
+    is_night_slate,
     select_card,
     slate_for,
 )
@@ -316,9 +317,9 @@ class TestCronReachesEveryKickoff:
     so changing one without the other fails here rather than in November.
     """
 
-    # (local weekday, local HH:MM, NFL_WITHIN_HOURS) for each `card` entry.
+    # (local weekday, local HH:MM, NFL_WITHIN_HOURS, NFL_SKIP_NIGHT) per `card`.
     @staticmethod
-    def _card_runs() -> list[tuple[int, int, int, float | None]]:
+    def _card_runs() -> list[tuple[int, int, int, float | None, bool]]:
         import re
         import subprocess
 
@@ -330,10 +331,11 @@ class TestCronReachesEveryKickoff:
                 continue
             mm, hh, _, _, dow = line.split()[:5]
             win = re.search(r"NFL_WITHIN_HOURS=(\d+(?:\.\d+)?)", line)
+            skip_night = "NFL_SKIP_NIGHT=1" in line
             for d in dow.split(","):
                 # cron Sunday is 0; Python's weekday() has Monday 0, Sunday 6.
                 runs.append(((int(d) - 1) % 7, int(hh), int(mm),
-                             float(win.group(1)) if win else None))
+                             float(win.group(1)) if win else None, skip_night))
         assert runs, "no card entries found in the printed crontab"
         return runs
 
@@ -367,14 +369,34 @@ class TestCronReachesEveryKickoff:
                 datetime.strptime(day, "%Y-%m-%d").date(),
                 datetime.strptime(hhmm, "%H:%M").time(), tzinfo=et,
             ).astimezone(local)
+            night = is_night_slate(kickoff)
             if not any(
                 run.weekday() == wd and run < kickoff
                 and (win is None or kickoff <= run + timedelta(hours=win))
-                for wd, hh, mm, win in runs
+                and not (skip_night and night)
+                for wd, hh, mm, win, skip_night in runs
                 for run in [kickoff.replace(hour=hh, minute=mm, second=0, microsecond=0)]
             ):
                 uncovered.append(f"{note} ({day} {hhmm} ET)")
         assert not uncovered, "no card run fires before: " + ", ".join(uncovered)
+
+    def test_sunday_night_is_carded_in_the_evening_not_at_midday(self):
+        """
+        Sunday Night belongs to the 19:00 run, like every other primetime game.
+
+        The midday run used to price it eight hours before a 20:20 ET kickoff
+        because one --today pass cards every window of the day at once. Now the
+        midday run carries NFL_SKIP_NIGHT and a Sunday 19:00 run picks it up
+        (user's call, Sep 13 2026).
+        """
+        runs = self._card_runs()
+        sunday = [r for r in runs if r[0] == 6]  # Python weekday: Sunday is 6
+        assert any(hh == 19 and not skip_night and win is None
+                   for _, hh, _mm, win, skip_night in sunday), \
+            "no unrestricted Sunday 19:00 card run to pick up Sunday Night"
+        assert all(skip_night or win is not None
+                   for _, hh, _mm, win, skip_night in sunday if hh < 19), \
+            "a Sunday run before 19:00 still prices the night game"
 
     def test_the_early_runs_stay_off_the_days_they_are_not_for(self):
         """A windowed early run must exit free on an ordinary week."""
@@ -391,7 +413,7 @@ class TestCronReachesEveryKickoff:
                 datetime.strptime(day, "%Y-%m-%d").date(),
                 datetime.strptime(hhmm, "%H:%M").time(), tzinfo=et,
             ).astimezone(local)
-            for wd, hh, mm, win in windowed:
+            for wd, hh, mm, win, _skip in windowed:
                 if wd != kickoff.weekday():
                     continue
                 run = kickoff.replace(hour=hh, minute=mm, second=0, microsecond=0)
