@@ -61,6 +61,14 @@ PARLAY_LEGS_WINDOW = 3
 PARLAY_LEAN_LEGS = (3, 5)
 PARLAY_MIN_ODDS = 300
 PARLAY_STAKE = 1.0
+#: The main book's props are the picks the user tracks as real bets, so a
+#: ticket may carry at most one of them — otherwise every primetime SGP is
+#: the card parlayed (user, Sep 14 2026: "at most one main-book leg per
+#: parlay ticket and also lean towards player props for the SGPs, and
+#: unless it's very likely for a TD, avoid TD scorers").
+PARLAY_MAX_MAIN_LEGS = 1
+#: An anytime-TD leg needs the model this sure (P(score) at or above it).
+PARLAY_TD_MIN_PROB = 0.50
 
 GAME_BET_TYPES = ("moneyline", "spread", "total")
 
@@ -207,30 +215,59 @@ def combine_legs(legs: list[BetCandidate], kind: str, stake: float, bankroll: fl
     )
 
 
+def is_main_book(c: BetCandidate) -> bool:
+    """A main-book receiving prop: the picks tracked as real bets."""
+    return c.bet_type == "prop" and c.strategy is None and c.market != TD_MARKET
+
+
+def _tier(c: BetCandidate) -> int:
+    """Player props first, then a TD favourite, then the game sides — the
+    tickets lean towards props; a moneyline or total fills only what the
+    props cannot."""
+    if c.bet_type == "prop":
+        return 1 if c.market == TD_MARKET else 0
+    return 2
+
+
+def _eligible(c: BetCandidate) -> bool:
+    if c.edge <= 0:
+        return False
+    if c.market == TD_MARKET:
+        return c.model_prob >= PARLAY_TD_MIN_PROB
+    return True
+
+
 def _positive(pool: list[BetCandidate]) -> list[BetCandidate]:
-    return sorted((c for c in pool if c.edge > 0), key=lambda c: c.edge, reverse=True)
+    return sorted((c for c in pool if _eligible(c)), key=lambda c: (_tier(c), -c.edge))
 
 
-def _greedy(pool: list[BetCandidate], n: int, one_per_game: bool) -> list[BetCandidate]:
+def _greedy(pool: list[BetCandidate], n: int, one_per_game: bool,
+            max_main: int = PARLAY_MAX_MAIN_LEGS) -> list[BetCandidate]:
     legs: list[BetCandidate] = []
     games: set[str] = set()
+    main = 0
     for c in pool:
         if len(legs) == n:
             break
         gk = _candidate_game_key(c)
         if one_per_game and gk in games:
             continue
+        if is_main_book(c) and main >= max_main:
+            continue
         if coherent(legs, c):
             legs.append(c)
             games.add(gk)
+            main += is_main_book(c)
     return legs
 
 
 def pick_legs(pool: list[BetCandidate], n: int, *, one_per_game: bool = False,
               min_odds: int = PARLAY_MIN_ODDS) -> list[BetCandidate]:
     """
-    Greedy by edge over the positive-edge pool, coherent at every step.
-    A ticket short of `min_odds` swaps its shortest-priced leg for the best
+    Greedy over the positive-edge pool — player props by edge first, a TD
+    favourite next, the game sides last — coherent at every step and
+    carrying at most PARLAY_MAX_MAIN_LEGS main-book legs. A ticket short of
+    `min_odds` swaps its shortest-priced leg for the best
     plus-money leg that keeps it coherent (a long shot is the brief); when no
     swap gets it there the ticket stands as it is.
     """
@@ -243,10 +280,13 @@ def pick_legs(pool: list[BetCandidate], n: int, *, one_per_game: bool = False,
     shortest = min(legs, key=lambda c: c.odds)
     rest = [c for c in legs if c is not shortest]
     used = {id(c) for c in legs}
+    main_left = sum(is_main_book(c) for c in rest)
     for c in ranked:
         if id(c) in used or c.odds <= 0:
             continue
         if one_per_game and _candidate_game_key(c) in {_candidate_game_key(r) for r in rest}:
+            continue
+        if is_main_book(c) and main_left >= PARLAY_MAX_MAIN_LEGS:
             continue
         if coherent(rest, c):
             swapped = rest + [c]

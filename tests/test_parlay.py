@@ -132,20 +132,54 @@ class TestPickLegs:
     def test_greedy_by_edge_stays_coherent(self):
         pool = [
             _prop("A", "under", "SEA", edge=0.40, market="player_receptions", line=4.5),
-            _prop("A", "under", "SEA", edge=0.39),                 # same player: skipped
-            _prop("B", "over", "SEA", edge=0.35),                  # opposite story on SEA
-            _prop("C", "under", "NE", edge=0.30),
+            _prop("A", "under", "SEA", edge=0.39, strategy="ladder"),  # same player: skipped
+            _prop("B", "over", "SEA", edge=0.35, strategy="overs"),    # opposite story on SEA
+            _prop("C", "under", "NE", edge=0.30, strategy="ladder"),
             _game("total", "under 44.5", edge=0.05, line=44.5),
         ]
         legs = pm.pick_legs(pool, 3)
         assert [leg.player or leg.pick_side for leg in legs] == ["A", "C", "under 44.5"]
 
+    def test_at_most_one_main_book_leg_per_ticket(self):
+        pool = [
+            _prop("A", "under", "SEA", edge=0.40),                  # main book
+            _prop("B", "under", "SEA", edge=0.39),                  # main book: refused
+            _prop("C", "under", "NE", edge=0.38),                   # main book: refused
+            _prop("D", "under", "NE", edge=0.10, strategy="ladder", odds=200),
+            _game("total", "under 44.5", edge=0.02, line=44.5),
+        ]
+        legs = pm.pick_legs(pool, 3)
+        assert [leg.player or leg.pick_side for leg in legs] == ["A", "D", "under 44.5"]
+        assert sum(pm.is_main_book(leg) for leg in legs) == 1
+
+    def test_props_before_game_sides_whatever_the_edge(self):
+        pool = [
+            _game("moneyline", SEA, edge=0.30, odds=150),           # huge but a game side
+            _prop("A", "under", "SEA", edge=0.05, strategy="overs"),
+            _prop("B", "under", "NE", edge=0.04, strategy="ladder", odds=180),
+            _prop("C", "under", "NE", edge=0.03, strategy="ladder", odds=180),
+        ]
+        legs = pm.pick_legs(pool, 3)
+        assert all(leg.bet_type == "prop" for leg in legs)
+
+    def test_td_scorer_only_when_the_model_is_sure(self):
+        long_shot = _prop("K", "yes", "SEA", edge=0.12, market="player_anytime_td", line=0.5,
+                          odds=300)
+        long_shot.model_prob = 0.35
+        fav = _prop("W", "yes", "NE", edge=0.10, market="player_anytime_td", line=0.5, odds=-120)
+        fav.model_prob = 0.62
+        others = [_prop("A", "under", "SEA", edge=0.2, strategy="ladder", odds=150),
+                  _prop("B", "under", "SEA", edge=0.15, strategy="overs")]
+        legs = pm.pick_legs(others + [long_shot, fav], 3)
+        names = {leg.player for leg in legs}
+        assert "W" in names and "K" not in names
+
     def test_short_ticket_swaps_in_a_plus_money_leg(self):
         pool = [
             _prop("A", "under", "SEA", edge=0.40, odds=-300),
-            _prop("B", "under", "SEA", edge=0.35, odds=-300),
-            _prop("C", "under", "NE", edge=0.30, odds=-300),      # product +137: too short
-            _prop("D", "under", "NE", edge=0.10, odds=250),
+            _prop("B", "under", "SEA", edge=0.35, odds=-300, strategy="overs"),
+            _prop("C", "under", "NE", edge=0.30, odds=-300, strategy="ladder"),  # +137: short
+            _prop("D", "under", "NE", edge=0.10, odds=250, strategy="ladder"),
         ]
         legs = pm.pick_legs(pool, 3, min_odds=300)
         names = {leg.player for leg in legs}
@@ -155,11 +189,16 @@ class TestPickLegs:
     def test_no_ticket_when_the_pool_cannot_fill_it(self):
         assert pm.pick_legs([_prop("A", "under", "SEA"), _prop("B", "over", "SEA")], 3) == []
         assert pm.pick_legs([_prop("A", "under", "SEA", edge=-0.01)] * 3, 3) == []
+        # three main-book unders alone can never make a ticket
+        assert pm.pick_legs([_prop("A", "under", "SEA"), _prop("B", "under", "SEA"),
+                             _prop("C", "under", "NE")], 3) == []
 
     def test_cross_game_takes_one_leg_per_game(self):
         pool = [_prop("A", "under", "SEA", edge=0.4), _prop("B", "under", "NE", edge=0.39),
-                _prop("C", "under", "LAR", edge=0.3, home=LAR, away=SF, ext="e2"),
-                _prop("D", "under", "SF", edge=0.2, home=LAR, away=SF, ext="e2")]
+                _prop("C", "under", "LAR", edge=0.3, home=LAR, away=SF, ext="e2",
+                      strategy="ladder"),
+                _prop("D", "under", "SF", edge=0.2, home=LAR, away=SF, ext="e2",
+                      strategy="ladder")]
         legs = pm.pick_legs(pool, 2, one_per_game=True)
         assert [leg.player for leg in legs] == ["A", "C"]
 
@@ -169,7 +208,7 @@ class TestBuildParlays:
         events = [_event("e1", SEA, NE, "2026-09-11T00:15:00Z")]
         slate = _slate(events, key="2026-09-10-3-night", label="Thursday Night")
         props = [_prop("A", "under", "SEA", edge=0.4)]
-        td = [_prop("B", "yes", "NE", edge=0.12, market="player_anytime_td", line=0.5, odds=300)]
+        td = [_prop("B", "yes", "NE", edge=0.12, market="player_anytime_td", line=0.5, odds=-110)]
         sides = [_game("moneyline", NE, edge=0.02, odds=140), _game("moneyline", SEA, edge=-0.02)]
         out = pm.build_parlays([slate], [props, td, [], []], sides, bankroll=100.0)
         assert len(out) == 1 and out[0].kind == "sgp" and out[0].same_game
@@ -185,9 +224,10 @@ class TestBuildParlays:
                                                                      "Las Vegas Raiders")]
         s_early = _slate(early)
         props = [_prop("A", "under", "SEA", edge=0.4), _prop("B", "under", "NE", edge=0.39),
-                 _prop("C", "under", "LAR", edge=0.3, home=LAR, away=SF, ext="e2"),
+                 _prop("C", "under", "LAR", edge=0.3, home=LAR, away=SF, ext="e2",
+                       strategy="ladder"),
                  _prop("D", "over", "DEN", edge=0.2, home="Denver Broncos",
-                       away="Las Vegas Raiders", ext="e3")]
+                       away="Las Vegas Raiders", ext="e3", strategy="overs")]
         sides = [_game("moneyline", SEA, edge=0.02, ext="e1"),
                  _game("moneyline", NE, edge=-0.02, ext="e1"),
                  _game("spread", f"{SF} +3.5", line=3.5, edge=0.015, home=LAR, away=SF, ext="e2"),
