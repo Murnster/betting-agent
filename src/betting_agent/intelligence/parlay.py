@@ -61,11 +61,14 @@ PARLAY_LEGS_WINDOW = 3
 PARLAY_LEAN_LEGS = (3, 5)
 PARLAY_MIN_ODDS = 300
 PARLAY_STAKE = 1.0
-#: The main book's props are the picks the user tracks as real bets, so a
-#: ticket may carry at most one of them — otherwise every primetime SGP is
-#: the card parlayed (user, Sep 14 2026: "at most one main-book leg per
+#: The CARDED main-book props are the picks the user tracks as real bets,
+#: so a ticket may carry at most one of them — otherwise every primetime SGP
+#: is the card parlayed (user, Sep 14 2026: "at most one main-book leg per
 #: parlay ticket and also lean towards player props for the SGPs, and
-#: unless it's very likely for a TD, avoid TD scorers").
+#: unless it's very likely for a TD, avoid TD scorers"). The extras — the
+#: same model's props that missed the slate cap — are free legs ("the picks
+#: should be able to come from the extras as well"), which is why the
+#: parlays are built after the cards are selected.
 PARLAY_MAX_MAIN_LEGS = 1
 #: An anytime-TD leg needs the model this sure (P(score) at or above it).
 PARLAY_TD_MIN_PROB = 0.50
@@ -215,9 +218,11 @@ def combine_legs(legs: list[BetCandidate], kind: str, stake: float, bankroll: fl
     )
 
 
-def is_main_book(c: BetCandidate) -> bool:
-    """A main-book receiving prop: the picks tracked as real bets."""
-    return c.bet_type == "prop" and c.strategy is None and c.market != TD_MARKET
+def is_card_pick(c: BetCandidate) -> bool:
+    """A main-book receiving prop that made the card: a pick tracked as a
+    real bet. The off-card extras are not."""
+    return (c.bet_type == "prop" and c.strategy is None and c.market != TD_MARKET
+            and bool((c.extra or {}).get("card")))
 
 
 def _tier(c: BetCandidate) -> int:
@@ -252,12 +257,12 @@ def _greedy(pool: list[BetCandidate], n: int, one_per_game: bool,
         gk = _candidate_game_key(c)
         if one_per_game and gk in games:
             continue
-        if is_main_book(c) and main >= max_main:
+        if is_card_pick(c) and main >= max_main:
             continue
         if coherent(legs, c):
             legs.append(c)
             games.add(gk)
-            main += is_main_book(c)
+            main += is_card_pick(c)
     return legs
 
 
@@ -280,13 +285,13 @@ def pick_legs(pool: list[BetCandidate], n: int, *, one_per_game: bool = False,
     shortest = min(legs, key=lambda c: c.odds)
     rest = [c for c in legs if c is not shortest]
     used = {id(c) for c in legs}
-    main_left = sum(is_main_book(c) for c in rest)
+    main_left = sum(is_card_pick(c) for c in rest)
     for c in ranked:
         if id(c) in used or c.odds <= 0:
             continue
         if one_per_game and _candidate_game_key(c) in {_candidate_game_key(r) for r in rest}:
             continue
-        if is_main_book(c) and main_left >= PARLAY_MAX_MAIN_LEGS:
+        if is_card_pick(c) and main_left >= PARLAY_MAX_MAIN_LEGS:
             continue
         if coherent(rest, c):
             swapped = rest + [c]
@@ -304,7 +309,8 @@ def build_parlays(slates: list[Slate], sections: list[list[BetCandidate]],
     games (the 19:00 primetime run has none, so it never rebuilds Sunday's).
 
     `sections` are the run's candidate lists (props, TD scorers, overs,
-    ladder); `lean_sides` every bettable game-market side, not only the
+    ladder) AFTER card selection, so extra["card"] tells a tracked pick from
+    an extra; `lean_sides` every bettable game-market side, not only the
     carded lean.
     """
     prop_pool = [c for section in sections for c in section]

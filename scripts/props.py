@@ -1273,12 +1273,6 @@ def main() -> None:
             lean_sides = game_sides(lines, books, bankroll)
         except Exception as exc:
             logger.warning("Game leans unavailable: %s", exc)
-    # Long-shot parlays: recombined from the sections above and the lean
-    # board. Their own book — nothing here touches the card.
-    parlays: list[Parlay] = []
-    if run_parlays:
-        parlays = build_parlays(slates, [candidates, td_picks, over_picks, ladder_picks],
-                                lean_sides, bankroll=parlay_bankroll)
     cards = []
     for slate in slates:
         card_props = select_card(candidates, slate, slate.prop_cap)
@@ -1303,8 +1297,16 @@ def main() -> None:
                      overs=slate_overs if run_overs else None,
                      overs_off_card=overs_off_card, overs_bankroll=overs_bankroll)
 
-    if parlays:
-        _print_parlays(parlays, parlay_bankroll)
+    # Long-shot parlays: recombined from the sections above and the lean
+    # board, AFTER the cards are chosen so a ticket can tell a tracked pick
+    # (at most one per ticket) from an extra. Their own book — nothing here
+    # touches the card.
+    parlays: list[Parlay] = []
+    if run_parlays:
+        parlays = build_parlays(slates, [candidates, td_picks, over_picks, ladder_picks],
+                                lean_sides, bankroll=parlay_bankroll)
+        if parlays:
+            _print_parlays(parlays, parlay_bankroll)
 
     if agent_summary:
         print(f"\nValidator{' (SHADOW — verdicts recorded, stakes untouched)' if shadow else ''}: "

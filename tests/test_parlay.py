@@ -31,14 +31,14 @@ LAR, SF = "Los Angeles Rams", "San Francisco 49ers"
 
 
 def _prop(player, side, team, *, odds=-110, edge=0.20, market="player_reception_yds",
-          line=49.5, home=SEA, away=NE, ext="e1", strategy=None):
+          line=49.5, home=SEA, away=NE, ext="e1", strategy=None, card=False):
     return BetCandidate(
         game_id=0, external_id=ext, home_team=home, away_team=away,
         game_date=date(2026, 9, 13), scheduled_game_date=date(2026, 9, 13), sport="NFL",
         bet_type="prop", pick_side=side, player=player, market=market, line=line,
         model_prob=0.6 + edge, implied_prob=0.6, edge=edge, odds=odds,
         kelly_fraction=0.02, recommended_bet=1.5, bankroll_at_pick=100.0,
-        strategy=strategy, extra={"team": team, "bookmaker": "draftkings"},
+        strategy=strategy, extra={"team": team, "bookmaker": "draftkings", "card": card},
     )
 
 
@@ -140,17 +140,29 @@ class TestPickLegs:
         legs = pm.pick_legs(pool, 3)
         assert [leg.player or leg.pick_side for leg in legs] == ["A", "C", "under 44.5"]
 
-    def test_at_most_one_main_book_leg_per_ticket(self):
+    def test_at_most_one_carded_pick_per_ticket(self):
         pool = [
-            _prop("A", "under", "SEA", edge=0.40),                  # main book
-            _prop("B", "under", "SEA", edge=0.39),                  # main book: refused
-            _prop("C", "under", "NE", edge=0.38),                   # main book: refused
+            _prop("A", "under", "SEA", edge=0.40, card=True),       # on the card
+            _prop("B", "under", "SEA", edge=0.39, card=True),       # on the card: refused
+            _prop("C", "under", "NE", edge=0.38, card=True),        # on the card: refused
             _prop("D", "under", "NE", edge=0.10, strategy="ladder", odds=200),
             _game("total", "under 44.5", edge=0.02, line=44.5),
         ]
         legs = pm.pick_legs(pool, 3)
         assert [leg.player or leg.pick_side for leg in legs] == ["A", "D", "under 44.5"]
-        assert sum(pm.is_main_book(leg) for leg in legs) == 1
+        assert sum(pm.is_card_pick(leg) for leg in legs) == 1
+
+    def test_extras_are_free_legs(self):
+        """The off-card main-book props are the same model cut by the slate
+        cap, not tracked bets — a ticket may take as many as it likes."""
+        pool = [
+            _prop("A", "under", "SEA", edge=0.40, card=True),
+            _prop("B", "under", "SEA", edge=0.39),                  # extra
+            _prop("C", "under", "NE", edge=0.38),                   # extra
+            _prop("D", "under", "NE", edge=0.10, strategy="ladder", odds=200),
+        ]
+        legs = pm.pick_legs(pool, 3)
+        assert [leg.player for leg in legs] == ["A", "B", "C"]
 
     def test_props_before_game_sides_whatever_the_edge(self):
         pool = [
@@ -189,9 +201,10 @@ class TestPickLegs:
     def test_no_ticket_when_the_pool_cannot_fill_it(self):
         assert pm.pick_legs([_prop("A", "under", "SEA"), _prop("B", "over", "SEA")], 3) == []
         assert pm.pick_legs([_prop("A", "under", "SEA", edge=-0.01)] * 3, 3) == []
-        # three main-book unders alone can never make a ticket
-        assert pm.pick_legs([_prop("A", "under", "SEA"), _prop("B", "under", "SEA"),
-                             _prop("C", "under", "NE")], 3) == []
+        # three carded unders alone can never make a ticket
+        assert pm.pick_legs([_prop("A", "under", "SEA", card=True),
+                             _prop("B", "under", "SEA", card=True),
+                             _prop("C", "under", "NE", card=True)], 3) == []
 
     def test_cross_game_takes_one_leg_per_game(self):
         pool = [_prop("A", "under", "SEA", edge=0.4), _prop("B", "under", "NE", edge=0.39),
@@ -411,6 +424,8 @@ class TestIsolation:
         assert 'pick.bet_type == "parlay"' in grader
         props = Path("scripts/props.py").read_text()
         assert "save_parlays_to_db(parlays" in props and "send_parlays_to_discord" in props
+        # built after the cards are selected, so extra["card"] is set on the legs' sources
+        assert props.index("card_props = select_card(candidates") < props.index("build_parlays(")
 
 
 # ---- Discord --------------------------------------------------------------------
