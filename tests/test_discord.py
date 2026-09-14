@@ -129,6 +129,13 @@ def test_build_pick_embed_with_validator_fields():
     assert "lineup uncertainty" in embed["description"]
 
 
+def test_build_pick_embed_shows_the_whole_why():
+    why = "x" * 120 + " end of blurb."
+    pick = _make_candidate(agent_verdict="UNCHANGED", agent_reasons=[why])
+    embed = _build_pick_embed(pick, rank=1)
+    assert f"**Why:** {why}" in embed["description"]
+
+
 def test_build_pick_embed_no_analysis():
     pick = _make_candidate(edge=0.08, odds=-110)
     embed = _build_pick_embed(pick, rank=1, analysis=None)

@@ -105,6 +105,10 @@ class TestValidate:
         assert "--max-budget-usd" in cmd and "--json-schema" in cmd
         rules = cmd[cmd.index("--system-prompt") + 1]
         assert "web search" in rules.lower() and "Player props" in rules
+        # Sep 14 2026: the text is the case for the pick, and search may look
+        # for role/usage news, not only injuries.
+        assert "`why` is the case for the pick" in rules and "depth chart" in rules
+        assert "Do not re-derive the model" not in rules
         assert "Travis Kelce" in seen["input"]          # payload goes on stdin
         assert seen["cwd"] != str(__import__("pathlib").Path.cwd())
 

@@ -94,6 +94,18 @@ def _send_webhook(url: str, payload: dict) -> bool:
     return False
 
 
+def _agent_lines(pick: BetCandidate) -> str:
+    """Validator verdict and its `why` blurb (the case for the pick), or ""."""
+    out = ""
+    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
+        shadow = bool((pick.extra or {}).get("agent", {}).get("shadow"))
+        out += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
+    why = " ".join(r.strip() for r in (pick.agent_reasons or []) if r)
+    if why:
+        out += f"\n**Why:** {why}"
+    return out
+
+
 def _build_pick_embed(
     pick: BetCandidate,
     rank: int,
@@ -116,13 +128,7 @@ def _build_pick_embed(
         f"**Kelly:** `{pick.kelly_fraction:.2%}`  \u2192  **Bet:** `${pick.recommended_bet:.2f}`"
     )
 
-    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
-        shadow = bool((pick.extra or {}).get("agent", {}).get("shadow"))
-        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
-
-    reasons = pick.agent_reasons or []
-    if reasons:
-        desc += "\n**Why:** " + "; ".join(reasons[:2])
+    desc += _agent_lines(pick)
 
     if analysis and analysis.get("key_factors"):
         factors = "\n".join(f"- {f}" for f in analysis["key_factors"])
@@ -331,11 +337,7 @@ def _build_td_embed(pick: BetCandidate, rank: int) -> dict:
         desc += "_Lean, not a pick: edge below the TD floor. Stake 0, tracked for hit rate and CLV._"
     for flag in extra.get("flags", []):
         desc += f"\n\u26a0 {flag.get('detail', '')}"
-    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
-        shadow = bool(extra.get("agent", {}).get("shadow"))
-        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
-    if pick.agent_reasons:
-        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    desc += _agent_lines(pick)
     tag = "PICK" if is_pick else "LEAN"
     return {"title": f"TD SCORER #{rank}  {pick.player} anytime TD ({tag})",
             "description": desc[:4000], "color": COLOR_BLUE if is_pick else COLOR_GREY}
@@ -373,11 +375,7 @@ def _build_ladder_embed(pick: BetCandidate, rank: int) -> dict:
              "_(paper — ladder bankroll)_")
     for flag in extra.get("flags", []):
         desc += f"\n\u26a0 {flag.get('detail', '')}"
-    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
-        shadow = bool(extra.get("agent", {}).get("shadow"))
-        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
-    if pick.agent_reasons:
-        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    desc += _agent_lines(pick)
     return {"title": f"LADDER #{rank}  {ladder_label(pick.player, pick.market, pick.line)}",
             "description": desc[:4000], "color": COLOR_BLUE}
 
@@ -420,11 +418,7 @@ def _build_over_embed(pick: BetCandidate, rank: int) -> dict:
         desc += "\n_Best over in the game by edge, but the model has none: flat 1% stake, tracked._"
     for flag in extra.get("flags", []):
         desc += f"\n\u26a0 {flag.get('detail', '')}"
-    if pick.agent_verdict and pick.agent_verdict != "SKIPPED":
-        shadow = bool(extra.get("agent", {}).get("shadow"))
-        desc += f"\n**Verdict:** `{pick.agent_verdict}`" + (" (shadow)" if shadow else "")
-    if pick.agent_reasons:
-        desc += "\n**Why:** " + "; ".join(pick.agent_reasons[:2])
+    desc += _agent_lines(pick)
     return {"title": f"OVER #{rank}  {over_label(pick.player, pick.market, pick.line)}",
             "description": desc[:4000], "color": COLOR_ORANGE}
 

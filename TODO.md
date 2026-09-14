@@ -349,6 +349,14 @@ applied):
   first book in the order that posted (one book per game, no best-of-N).
   Card shows the book; `--closing` uses the same order. Live check the same
   day: 6 paper picks on BUF @ HOU priced against DraftKings.
+- [ ] **Validator `why` blurbs — check quality and cost after the first full
+  Sunday (rewritten 2026-09-14).** The text now argues the pick instead of
+  listing injury findings, and search may look for role/usage news too. One
+  smoke call (3 picks, Opus + search) cost $0.16 and produced three-sentence
+  blurbs specific to each market; Sunday's DAL@NYG was $0.30 for 7 picks.
+  Read the cost line and the blurbs on the next slate; if the texts drift
+  back to injury summaries, tighten the prompt; if they run long on the
+  card, cap at two sentences in the rules.
 - [ ] **Validator per-call cap vs. WebSearch cost.** The first live shadow run
   (6 picks, Sonnet + WebSearch) cost $0.42 and was killed by
   `AGENT_CLAUDE_MAX_CALL_USD=0.25` — every pick came back SKIPPED and, before

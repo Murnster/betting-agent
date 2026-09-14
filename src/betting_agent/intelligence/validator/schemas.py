@@ -42,6 +42,12 @@ class CandidateValidationInput(BaseModel):
     projection_mean: float | None = None
     projection_games: int | None = None
     recent_values: list[float] | None = None   # last 8 games of the modeled stat
+    position: str | None = None
+    opponent: str | None = None               # the other club in this game
+    # the same last games as recent_values, labelled: {"week": "2025 W17", "opp": "PHI", "value": 4.0}
+    recent_games: list[dict] | None = None
+    # main | td_scorer | straight_over | ladder — which paper book the pick belongs to
+    section: str | None = None
 
 
 class ValidatorInput(BaseModel):
@@ -67,7 +73,8 @@ class ValidationPickResult(BaseModel):
     edge_adjustment: float = 0.0
     adjusted_edge: float
     kelly_multiplier: float = 1.0
-    reasons: list[str] = Field(default_factory=list)
+    why: str = ""                              # the case for the pick, one or two sentences
+    reasons: list[str] | None = None           # legacy replies; folded into `why` when it is empty
 
 
 class UsageTokens(BaseModel):

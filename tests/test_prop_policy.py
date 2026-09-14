@@ -692,3 +692,39 @@ class TestBookPreference:
         assert prop_bookmaker_order() == ["bet365", "draftkings", "fanduel"]
         monkeypatch.setattr(settings, "preferred_bookmakers", "fanduel")
         assert prop_bookmaker_order() == ["fanduel", "draftkings"]
+
+
+class TestValidatorPayloadContext:
+    """Sep 14 2026: the validator's `why` argues the pick, so it gets the last
+    games labelled with week and opponent, plus position and opponent."""
+
+    def _model(self):
+        hist = pd.DataFrame({
+            "player_key": ["a b"] * 3 + ["c d"],
+            "season": [2025, 2025, 2025, 2025], "week": [15, 16, 17, 17],
+            "t": [202515, 202516, 202517, 202517],
+            "opponent_team": ["PHI", "GB", "DAL", "NYG"],
+            "position": ["TE", "TE", "TE", "WR"],
+            "receptions": [3.0, -1.0, 5.0, 2.0],
+        })
+        class _M:
+            stat_col = "receptions"
+            history = hist
+        return _M()
+
+    def test_recent_games_are_labelled_and_aligned_with_recent_values(self):
+        m = self._model()
+        games = props_script._recent_games(m, "a b")
+        assert games == [{"week": "2025 W15", "opp": "PHI", "value": 3.0},
+                         {"week": "2025 W16", "opp": "GB", "value": 0.0},
+                         {"week": "2025 W17", "opp": "DAL", "value": 5.0}]
+        assert [g["value"] for g in games] == props_script._recent_values(m, "a b")
+        assert props_script._position(m, "a b") == "TE"
+        assert props_script._position(m, "nobody") is None
+        assert props_script._recent_games(m, "nobody") == []
+
+    def test_helpers_tolerate_a_model_without_history(self):
+        class _Bare:
+            pass
+        assert props_script._recent_games(_Bare(), "a b") == []
+        assert props_script._position(_Bare(), "a b") is None

@@ -240,11 +240,26 @@ def save_agent_validations_to_db(records: list[AgentValidationRecord]) -> None:
             )
 
 
+def _section(pick: BetCandidate) -> str | None:
+    """Which paper book a prop belongs to, so the validator knows an experiment
+    pool from the tracked card. Game-market picks have no section."""
+    if pick.bet_type != "prop":
+        return None
+    if pick.market == "player_anytime_td":
+        return "td_scorer"
+    if pick.strategy == "overs":
+        return "straight_over"
+    if pick.strategy == "ladder" or (pick.market or "").endswith("_alternate"):
+        return "ladder"
+    return "main"
+
+
 def _candidate_input(pick: BetCandidate) -> CandidateValidationInput:
     from betting_agent.sports.teams import full_team_name
 
     extra = pick.extra or {}
     recent = extra.get("recent_values")
+    recent_games = extra.get("recent_games")
     return CandidateValidationInput(
         bet_type=pick.bet_type,
         pick_side=pick.pick_side,
@@ -261,6 +276,10 @@ def _candidate_input(pick: BetCandidate) -> CandidateValidationInput:
         projection_mean=extra.get("projection_mean"),
         projection_games=extra.get("projection_games"),
         recent_values=[float(v) for v in recent] if recent else None,
+        position=extra.get("position"),
+        opponent=full_team_name(pick.sport, extra.get("opponent")),
+        recent_games=list(recent_games) if recent_games else None,
+        section=_section(pick),
     )
 
 
@@ -345,19 +364,28 @@ def _apply_result(
         multiplier = 1.0
         if item.verdict == "REDUCED":
             multiplier = min(max(item.kelly_multiplier, 0.0), 1.0)
+        # `why` is the case for the pick (Sep 14 2026: the old risk-findings
+        # list read as an injury report — "no news found" on healthy starters).
+        # It rides in the reasons slot as a single entry so nothing downstream
+        # changes shape; a legacy reply with only `reasons` is folded in.
+        why = (item.why or "").strip()[:600]
+        if not why and item.reasons:
+            why = "; ".join(r.strip() for r in item.reasons[:3] if r and r.strip())[:600]
+        reasons = [why] if why else []
         # SKIPPED belongs to the harness (no call, budget, failed call). A model
         # that returns it has found nothing actionable — on the 2026 opener it
         # did so believing two offseason movers "were not in this game".
-        verdict, reasons = item.verdict, item.reasons[:3]
+        verdict = item.verdict
         if verdict == "SKIPPED":
             verdict, multiplier = "UNCHANGED", 1.0
-            reasons = ["model returned SKIPPED; treated as unchanged"] + reasons[:2]
+            reasons = ["model returned SKIPPED; treated as unchanged"] + reasons
 
         pick.agent_verdict = verdict
         pick.agent_reasons = reasons
         pick.agent_cost_usd = per_pick_cost
         pick.extra["agent"] = {
             "reasons": reasons,
+            "why": why,
             "verdict": verdict,
             "shadow": shadow,
             "proposed_edge": proposed_edge,

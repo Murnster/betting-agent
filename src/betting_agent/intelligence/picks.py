@@ -6,6 +6,7 @@ Generates best pick per bet type per game, filtered by edge threshold.
 from __future__ import annotations
 
 import logging
+import textwrap
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -784,11 +785,13 @@ def format_picks_cli(
                 "Validator (shadow)  " if shadow else "Validator  ",
             ))
         if pick.agent_reasons:
-            reason = ", ".join(pick.agent_reasons[:2])[:48]
-            lines.append(_card_row(
-                f"       Why: {reason}",
-                "  ",
-            ))
+            # The blurb is the case for the pick; wrap it rather than cut it.
+            why = " ".join(r.strip() for r in pick.agent_reasons if r)
+            for i, chunk in enumerate(textwrap.wrap(why, W - 16) or [""]):
+                lines.append(_card_row(
+                    f"       {'Why: ' if i == 0 else '     '}{chunk}",
+                    "  ",
+                ))
         lines.append("  \u2514" + "\u2500" * W + "\u2518")
 
         # Collect LLM analysis if present (only once per game)

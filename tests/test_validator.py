@@ -588,3 +588,98 @@ def test_failed_call_is_retried_before_the_game_is_skipped(monkeypatch):
     kelce = _prop("Travis Kelce")
     _, summary = validate_picks([kelce], sport="NFL", mode="all", shadow=True)
     assert v.calls == 1 and kelce.agent_verdict == "SKIPPED"
+
+
+def _why_result(*items):
+    return GameValidationResult(
+        game_id="evt-1",
+        results=[ValidationPickResult(
+            bet_type="prop", pick_side=side, player=player, verdict=verdict,
+            edge_adjustment=0.0, adjusted_edge=0.1, kelly_multiplier=1.0, why=why,
+        ) for player, side, verdict, why in items],
+        tokens_used=UsageTokens(input=500, output=50),
+        estimated_cost_usd=0.04,
+    )
+
+
+class TestWhyBlurb:
+    """Sep 14 2026: the validator's text is the case for the pick, not a list
+    of risk findings — 'no injury news found' told the reader nothing."""
+
+    def test_why_lands_in_the_reasons_slot_and_the_record(self, monkeypatch):
+        class _Validator:
+            def is_available(self):
+                return True
+
+            def validate(self, payload):
+                return _why_result(("Travis Kelce", "over", "UNCHANGED",
+                                    "  5+ catches in six of his last eight vs a soft TE slate. "))
+
+        _wire(monkeypatch, _Validator())
+        kelce = _prop("Travis Kelce")
+        _, summary = validate_picks([kelce], sport="NFL", mode="all", shadow=True)
+        why = "5+ catches in six of his last eight vs a soft TE slate."
+        assert kelce.agent_reasons == [why]
+        assert kelce.extra["agent"]["why"] == why
+        assert kelce.extra["agent"]["reasons"] == [why]
+        assert summary.records[0].reasons == [why]
+
+    def test_empty_why_gives_no_text(self, monkeypatch):
+        class _Validator:
+            def is_available(self):
+                return True
+
+            def validate(self, payload):
+                return _why_result(("Travis Kelce", "over", "UNCHANGED", ""))
+
+        _wire(monkeypatch, _Validator())
+        kelce = _prop("Travis Kelce")
+        validate_picks([kelce], sport="NFL", mode="all", shadow=True)
+        assert kelce.agent_reasons == [] and kelce.extra["agent"]["why"] == ""
+
+    def test_legacy_reasons_reply_is_folded_into_why(self, monkeypatch):
+        """A reply that only carries the old `reasons` list still shows text."""
+        class _Validator:
+            def is_available(self):
+                return True
+
+            def validate(self, payload):
+                return _prop_result(("Travis Kelce", "over", "REDUCED", -0.01, 0.8, "limited Wed"))
+
+        _wire(monkeypatch, _Validator())
+        kelce = _prop("Travis Kelce")
+        validate_picks([kelce], sport="NFL", mode="all", shadow=True)
+        assert kelce.agent_reasons == ["limited Wed"]
+        assert kelce.extra["agent"]["why"] == "limited Wed"
+
+    def test_payload_carries_role_context_and_section(self, monkeypatch):
+        captured = {}
+
+        class _Validator:
+            def is_available(self):
+                return True
+
+            def validate(self, payload):
+                captured["picks"] = payload.picks
+                return _why_result(("Travis Kelce", "over", "UNCHANGED", "ok"),
+                                   ("Rashee Rice", "over", "UNCHANGED", "ok"),
+                                   ("Isiah Pacheco", "yes", "UNCHANGED", "ok"))
+
+        _wire(monkeypatch, _Validator())
+        kelce = _prop("Travis Kelce")
+        kelce.extra.update({"position": "TE", "opponent": "BUF",
+                            "recent_games": [{"week": "2025 W17", "opp": "DEN", "value": 5.0}]})
+        rice = _prop("Rashee Rice")
+        rice.strategy = "overs"
+        pacheco = _prop("Isiah Pacheco", side="yes")
+        pacheco.market = "player_anytime_td"
+        validate_picks([kelce, rice, pacheco], sport="NFL", mode="all", shadow=True)
+        by_player = {p.player: p for p in captured["picks"]}
+        assert by_player["Travis Kelce"].position == "TE"
+        assert by_player["Travis Kelce"].opponent == "Buffalo Bills"      # "BUF" expanded
+        assert by_player["Travis Kelce"].recent_games == [
+            {"week": "2025 W17", "opp": "DEN", "value": 5.0}]
+        assert by_player["Travis Kelce"].section == "main"
+        assert by_player["Rashee Rice"].section == "straight_over"
+        assert by_player["Rashee Rice"].opponent is None and by_player["Rashee Rice"].recent_games is None
+        assert by_player["Isiah Pacheco"].section == "td_scorer"

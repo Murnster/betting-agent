@@ -112,6 +112,7 @@ from betting_agent.sports.nfl.td_props import (
     MIN_FAIR_PROB,
     TD_MARKET,
     TD_POSITIONS,
+    TD_STAT_COL,
     TouchdownPropsModel,
     build_td_history,
     expected_game_tds,
@@ -333,6 +334,33 @@ def _recent_values(model, player_key: str) -> list[float]:
     return [round(max(0.0, float(v)), 1) for v in rows[col].tail(RECENT_GAMES_FOR_PAYLOAD)]
 
 
+def _recent_games(model, player_key: str, col: str | None = None) -> list[dict]:
+    """The same last games as `_recent_values`, labelled with week and opponent
+    so the validator can say "4+ catches in six of his last eight"."""
+    col = col or getattr(model, "stat_col", None)
+    hist = getattr(model, "history", None)
+    if col is None or hist is None or col not in hist.columns:
+        return []
+    rows = hist[hist["player_key"] == player_key]
+    if "t" in rows.columns:
+        rows = rows.sort_values("t")
+    out = []
+    for r in rows.tail(RECENT_GAMES_FOR_PAYLOAD).itertuples(index=False):
+        d = r._asdict()
+        week = f"{int(d['season'])} W{int(d['week'])}" if "season" in d and "week" in d else None
+        out.append({"week": week, "opp": d.get("opponent_team"),
+                    "value": round(max(0.0, float(d[col])), 1)})
+    return out
+
+
+def _position(model, player_key: str) -> str | None:
+    hist = getattr(model, "history", None)
+    if hist is None or "position" not in hist.columns:
+        return None
+    rows = hist[hist["player_key"] == player_key]
+    return str(rows["position"].iloc[-1]) if len(rows) else None
+
+
 def player_teams(candidates: list[BetCandidate]) -> dict[str, str]:
     """player_key → team abbreviation, from what generate_prop_candidates recorded."""
     return {
@@ -438,7 +466,10 @@ def generate_prop_candidates(
                                    "projection_games": proj.games,
                                    "bookmaker": book.get("key"),
                                    "team": player_team if opponent else None,
-                                   "recent_values": _recent_values(model, player_key)},
+                                   "opponent": opponent,
+                                   "position": _position(model, player_key),
+                                   "recent_values": _recent_values(model, player_key),
+                                   "recent_games": _recent_games(model, player_key)},
                         ))
     candidates = _deduplicate_by_player(candidates)
     # Official injury report: Out/Doubtful players are dropped, Questionable
@@ -552,7 +583,9 @@ def generate_td_candidates(
                 extra={"projection_mean": round(proj.rate, 3), "projection_games": proj.games,
                        "bookmaker": book_key, "team": team, "board_hold": round(hold, 3),
                        "expected_game_tds": round(exp_home + exp_away, 2),
+                       "opponent": opponent, "position": _position(model, pk),
                        "recent_values": _td_recent(model, pk),
+                       "recent_games": _recent_games(model, pk, TD_STAT_COL),
                        "td_pick": is_pick},
             ))
         game_cands.sort(key=lambda c: c.edge, reverse=True)
@@ -685,8 +718,8 @@ def generate_ladder_candidates(
                     opponent = (away_ab if team == home_ab else home_ab
                                 if team == away_ab else None)
                     projections[pk] = (model.project_ladder(pk, season, week, opponent=opponent),
-                                       team if opponent else None)
-                proj, team = projections[pk]
+                                       team if opponent else None, opponent)
+                proj, team, opponent = projections[pk]
                 if proj is None:
                     continue
                 p_hit = proj.prob_hit(line)
@@ -706,7 +739,10 @@ def generate_ladder_candidates(
                            "bookmaker": book.get("key"), "team": team,
                            "base_market": base,
                            "book_hold": round(holds.get(pk, DEFAULT_LADDER_HOLD), 3),
+                           "opponent": opponent,
+                           "position": _position(model, pk),
                            "recent_values": _recent_values(model, pk),
+                           "recent_games": _recent_games(model, pk),
                            "edge_floor": floor},
                 ))
         # One rung per player (best edge across rungs and markets); the game's
@@ -791,8 +827,8 @@ def generate_over_candidates(
                     opponent = (away_ab if team == home_ab else home_ab
                                 if team == away_ab else None)
                     projections[pk] = (model.project_ladder(pk, season, week, opponent=opponent),
-                                       team if opponent else None)
-                proj, team = projections[pk]
+                                       team if opponent else None, opponent)
+                proj, team, opponent = projections[pk]
                 if proj is None:
                     continue
                 p_hit = proj.prob_hit(line)
@@ -812,7 +848,10 @@ def generate_over_candidates(
                            "projection_games": proj.games,
                            "bookmaker": book.get("key"), "team": team,
                            "book_hold": round(p_o + p_u - 1.0, 3),
+                           "opponent": opponent,
+                           "position": _position(model, pk),
                            "recent_values": _recent_values(model, pk),
+                           "recent_games": _recent_games(model, pk),
                            "edge_floor": floor, "flat_stake": False},
                 ))
         game_cands = sorted(_deduplicate_by_player(game_cands), key=lambda c: c.edge, reverse=True)
@@ -873,7 +912,7 @@ def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
         for flag in c.extra.get("flags", []):
             print(f"{'':<24} ! {flag.get('detail', '')}")
         agent = c.extra.get("agent") or {}
-        for reason in agent.get("reasons", [])[:2]:
+        for reason in agent.get("reasons", []):
             print(f"{'':<24} > {reason}")
 
 
@@ -889,7 +928,7 @@ def _print_td_scorers(td: list[BetCandidate], shadow: bool) -> None:
               f"{tag}  {verdict}")
         for flag in c.extra.get("flags", []):
             print(f"{'':<28} ! {flag.get('detail', '')}")
-        for reason in (c.extra.get("agent") or {}).get("reasons", [])[:2]:
+        for reason in (c.extra.get("agent") or {}).get("reasons", []):
             print(f"{'':<28} > {reason}")
 
 
@@ -907,7 +946,7 @@ def _print_overs(overs: list[BetCandidate], shadow: bool) -> None:
               f"{c.recommended_bet:>8.2f}  {(c.extra.get('bookmaker') or ''):<11} {tag}  {verdict}")
         for flag in c.extra.get("flags", []):
             print(f"{'':<28} ! {flag.get('detail', '')}")
-        for reason in (c.extra.get("agent") or {}).get("reasons", [])[:2]:
+        for reason in (c.extra.get("agent") or {}).get("reasons", []):
             print(f"{'':<28} > {reason}")
 
 
@@ -924,7 +963,7 @@ def _print_ladder(ladder: list[BetCandidate], shadow: bool) -> None:
               f"{c.recommended_bet:>8.2f}  {(c.extra.get('bookmaker') or ''):<11} {tag}  {verdict}")
         for flag in c.extra.get("flags", []):
             print(f"{'':<28} ! {flag.get('detail', '')}")
-        for reason in (c.extra.get("agent") or {}).get("reasons", [])[:2]:
+        for reason in (c.extra.get("agent") or {}).get("reasons", []):
             print(f"{'':<28} > {reason}")
 
 

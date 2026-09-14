@@ -856,6 +856,18 @@ class TestAgentFormatting:
         assert "+6.0% -> +4.0%" in rendered
         assert "lineup uncertainty" in rendered
 
+    def test_format_picks_cli_wraps_the_why_instead_of_cutting_it(self):
+        """The card used to hard-cut the text at 48 chars mid-word."""
+        why = ("Seven or more targets in six of his last eight with a 24% share, "
+               "and the opponent allows the most receptions to tight ends.")
+        pick = _make_candidate(agent_verdict="UNCHANGED", agent_reasons=[why], recommended_bet=15.0)
+        rendered = format_picks_cli([pick], bankroll=100.0, sport="NFL")
+        assert "Why: Seven or more targets" in rendered
+        assert "tight ends." in rendered
+        assert rendered.count("Why:") == 1          # continuation rows are indented, not relabelled
+        card_lines = [line for line in rendered.splitlines() if line.startswith("  \u2502")]
+        assert all(len(line) == len(card_lines[0]) for line in card_lines)
+
 
 class TestGuardrails:
     def test_max_edge_rejection(self):
