@@ -77,6 +77,11 @@ def main() -> None:
                         help="Re-post the results for a day already graded, without "
                              "re-grading anything. Use it after correcting which picks "
                              "count (Pick.on_card) so the channel matches the ledger.")
+    parser.add_argument("--no-extras", action="store_true",
+                        help="Skip the off-card extras results post. A webhook appends "
+                             "rather than edits, so a re-post that only needs to correct "
+                             "the main results channel would otherwise duplicate the "
+                             "extras post in its own channel for no reason.")
     args = parser.parse_args()
 
     target_date = date.fromisoformat(args.date) if args.date else None
@@ -171,11 +176,14 @@ def main() -> None:
                     continue  # nothing settled for this sport in this run
                 sports_with_results.append(sport_name)
                 lean_summary = td_summary = ladder_summary = overs_summary = None
+                # Scope shared by the headline and the per-bet-type breakdown
+                # under it. Empty for sports with no side books.
+                main: dict = {}
                 if sport_name == "NFL":
                     # Receiving props are the picks; game markets are paper
                     # leans; anytime-TD scorers, the ladder hits and the
                     # straight overs (own bankrolls) get their own lines.
-                    main = {"exclude_market": TD_MARKET, "exclude_strategy": SIDE_BOOKS}
+                    main.update(exclude_market=TD_MARKET, exclude_strategy=SIDE_BOOKS)
                     prop_summary = get_summary(sport=sport_name, bet_type="prop", **main, **window)
                     lean_summary = get_summary(sport=sport_name, bet_type=list(LEAN_BET_TYPES), **window)
                     td_summary = get_summary(sport=sport_name, bet_type="prop", market=TD_MARKET, **window)
@@ -184,7 +192,10 @@ def main() -> None:
                     overs_summary = get_summary(sport=sport_name, bet_type="prop",
                                                 strategy=OVERS_STRATEGY, **window)
                     summary = prop_summary if "total_bets" in prop_summary else summary
-                breakdown = get_breakdown_by_bet_type(sport=sport_name, **window)
+                # Same scope as the headline: an unscoped PROP row printed
+                # 15-28 / -16.7% under a headline of 8-7 / +11.1%, because it
+                # was still blending the TD, ladder and overs books into it.
+                breakdown = get_breakdown_by_bet_type(sport=sport_name, **main, **window)
                 pick_details = get_graded_picks_detail(sport=sport_name, **window)
                 kwargs = {}
                 if sport_name in inline_alltime:
@@ -203,6 +214,7 @@ def main() -> None:
                                                              strategy=OVERS_STRATEGY, **alltime)
                         if sport_name == "NFL" else None,
                         "starting_bankroll": settings.starting_bankroll,
+                        "td_bankroll": settings.td_bankroll,
                         "ladder_bankroll": settings.ladder_bankroll,
                         "overs_bankroll": settings.overs_bankroll,
                     }
@@ -215,7 +227,7 @@ def main() -> None:
                 # The off-card props, in their own channel and their own
                 # bankroll — the same filters as the main prop summary above,
                 # inverted on on_card. Never posted to the results channel.
-                if (sport_name == "NFL" and settings.extras_enabled
+                if (sport_name == "NFL" and settings.extras_enabled and not args.no_extras
                         and is_discord_configured(sport_name, "EXTRAS_RESULTS")):
                     ex = {**main, "bet_type": "prop", "on_card": False}
                     extras_summary = get_summary(sport=sport_name, **ex, **grade_window)

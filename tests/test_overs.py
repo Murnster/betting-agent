@@ -176,8 +176,13 @@ class TestOversAccounting:
         assert ledger_mod.strategy_exclusion(Pick.strategy, None) is None
 
     def test_grade_script_excludes_both_side_books_from_the_main_line(self):
+        """The main-line scope (`main`) drops every side book, and the
+        per-bet-type breakdown under the headline is built with it too — an
+        unscoped breakdown printed a PROP row blending all four books."""
         src = Path("scripts/grade.py").read_text()
-        assert '"exclude_strategy": SIDE_BOOKS' in src and "OVERS_STRATEGY" in src
+        assert "exclude_strategy=SIDE_BOOKS" in src and "OVERS_STRATEGY" in src
+        assert "exclude_market=TD_MARKET" in src
+        assert "get_breakdown_by_bet_type(sport=sport_name, **main, **window)" in src
 
 
 def _over_pick(**kw):

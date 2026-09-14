@@ -18,10 +18,19 @@ import argparse
 import logging
 
 from betting_agent.accounting.grader import _calculate_pnl
-from betting_agent.accounting.ledger import equity_curve, ledger_summary
+from betting_agent.accounting.ledger import (
+    LADDER_STRATEGY,
+    OVERS_STRATEGY,
+    SIDE_BOOKS,
+    SIDE_MARKETS,
+    equity_curve,
+    ledger_summary,
+)
 from betting_agent.accounting.roi import carded_only
+from betting_agent.config import settings
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.session import get_session
+from betting_agent.sports.nfl.td_props import TD_MARKET
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -81,10 +90,13 @@ def cmd_set(args) -> None:
 
 def cmd_ledger(args) -> None:
     # Same scope as the results post: only the picks that made a card were
-    # ever offered, so only those move the bankroll (roi.carded_only).
+    # ever offered, so only those move the bankroll (roi.carded_only), and
+    # only the MAIN book's — the ladder, the straight overs and the anytime-TD
+    # scorers each stake their own paper bankroll and are listed after it.
     sport = args.sport.upper() if args.sport else None
     on_card = None if args.all_picks else carded_only(sport)
-    curve = equity_curve(sport=sport, on_card=on_card)
+    main = {"exclude_strategy": SIDE_BOOKS, "exclude_market": SIDE_MARKETS}
+    curve = equity_curve(sport=sport, on_card=on_card, **main)
     if not curve:
         print("No settled picks yet.")
         return
@@ -93,10 +105,19 @@ def cmd_ledger(args) -> None:
     for e in curve[-args.limit:]:
         print(f"{str(e.event_date):<11} {e.pick_id:>5} {e.bet_type:<9} "
               f"{e.stake:>7.2f} {e.result:<6} {e.pnl:>+8.2f} {e.equity:>9.2f}")
-    s = ledger_summary(sport=sport, on_card=on_card)
+    s = ledger_summary(sport=sport, on_card=on_card, **main)
     print(f"\nStart ${s['starting_bankroll']:,.2f} → ${s['current_bankroll']:,.2f} "
           f"({s['total_pnl']:+,.2f}) | peak ${s['peak_equity']:,.2f} | "
           f"max drawdown ${s['max_drawdown']:,.2f} | {s['settled_picks']} picks")
+    for label, scope in (("Straight overs", {"strategy": OVERS_STRATEGY}),
+                         ("Ladder hits", {"strategy": LADDER_STRATEGY}),
+                         ("TD scorers", {"market": TD_MARKET,
+                                         "starting_bankroll": settings.td_bankroll})):
+        side = ledger_summary(sport=sport, on_card=on_card, **scope)
+        if side["settled_picks"]:
+            print(f"{label:<15} ${side['starting_bankroll']:,.2f} → "
+                  f"${side['current_bankroll']:,.2f} ({side['total_pnl']:+,.2f}) | "
+                  f"{side['settled_picks']} picks  (own bankroll)")
 
 
 def main() -> None:

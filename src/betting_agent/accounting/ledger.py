@@ -18,14 +18,21 @@ from typing import Any
 from betting_agent.config import settings
 from betting_agent.db.models import Game, Pick
 from betting_agent.db.session import get_session
+from betting_agent.sports.nfl.td_props import TD_MARKET
 
 #: Pick.strategy of the ladder-hits section — a separate paper book with its
 #: own bankroll (settings.ladder_bankroll). NULL strategy = the default book.
 LADDER_STRATEGY = "ladder"
 #: Pick.strategy of the straight-overs section (main-line Overs, own bankroll).
 OVERS_STRATEGY = "overs"
-#: Every side book; the main prop summaries exclude all of them.
+#: Every side book addressed by Pick.strategy; the main prop summaries
+#: exclude all of them.
 SIDE_BOOKS: tuple[str, ...] = (LADDER_STRATEGY, OVERS_STRATEGY)
+#: The anytime-TD board is a side book too, but it is addressed by MARKET
+#: rather than by Pick.strategy: every TD pick already saved carries a NULL
+#: strategy, and tagging them now would rewrite the past. Excluding the
+#: market instead separates the book without touching a single row.
+SIDE_MARKETS: tuple[str, ...] = (TD_MARKET,)
 
 
 def starting_bankroll_for(strategy: str | None) -> float:
@@ -34,6 +41,15 @@ def starting_bankroll_for(strategy: str | None) -> float:
     if strategy == OVERS_STRATEGY:
         return settings.overs_bankroll
     return settings.starting_bankroll
+
+
+def market_exclusion(column, exclude: str | Sequence[str] | None):
+    """SQLAlchemy clause keeping NULL-market rows (game markets, leans) and
+    dropping `exclude`; None when nothing is excluded."""
+    if not exclude:
+        return None
+    names = [exclude] if isinstance(exclude, str) else list(exclude)
+    return (column.is_(None)) | (column.notin_(names))
 
 
 def strategy_exclusion(column, exclude: str | Sequence[str] | None):
@@ -65,6 +81,8 @@ def equity_curve(
     starting_bankroll: float | None = None,
     strategy: str | None = None,
     exclude_strategy: str | Sequence[str] | None = None,
+    market: str | None = None,
+    exclude_market: str | Sequence[str] | None = None,
     on_card: bool | None = None,
 ) -> list[LedgerEntry]:
     """
@@ -74,6 +92,9 @@ def equity_curve(
 
     `strategy` restricts the curve to one paper book (the ladder section
     starts from settings.ladder_bankroll); `exclude_strategy` drops it.
+    `market` / `exclude_market` do the same for a book keyed on the market
+    instead — the anytime-TD board (see SIDE_MARKETS), whose stakes come
+    from settings.td_bankroll and must never move the main equity.
     `on_card=True` charges the bankroll only for the picks that made a card —
     the ones actually offered. Off-card picks are model evaluation, never
     money, so they must not move an equity curve (see roi.carded_only).
@@ -92,6 +113,11 @@ def equity_curve(
         if strategy:
             q = q.filter(Pick.strategy == strategy)
         clause = strategy_exclusion(Pick.strategy, exclude_strategy)
+        if clause is not None:
+            q = q.filter(clause)
+        if market:
+            q = q.filter(Pick.market == market)
+        clause = market_exclusion(Pick.market, exclude_market)
         if clause is not None:
             q = q.filter(clause)
         if on_card is not None:
@@ -140,15 +166,19 @@ def equity_curve(
 
 def current_bankroll(sport: str | None = None, strategy: str | None = None,
                      exclude_strategy: str | Sequence[str] | None = None,
+                     market: str | None = None,
+                     exclude_market: str | Sequence[str] | None = None,
                      on_card: bool | None = None) -> float:
     """Starting bankroll plus all graded P&L."""
     curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy,
-                         on_card=on_card)
+                         market=market, exclude_market=exclude_market, on_card=on_card)
     return curve[-1].equity if curve else starting_bankroll_for(strategy)
 
 
 def ledger_summary(sport: str | None = None, strategy: str | None = None,
                    exclude_strategy: str | Sequence[str] | None = None,
+                   market: str | None = None,
+                   exclude_market: str | Sequence[str] | None = None,
                    on_card: bool | None = None,
                    starting_bankroll: float | None = None) -> dict[str, Any]:
     """
@@ -156,10 +186,12 @@ def ledger_summary(sport: str | None = None, strategy: str | None = None,
 
     `starting_bankroll` overrides the strategy's own: the off-card extras are
     not a Pick.strategy (they are the main book's picks that missed the card),
-    so their book is addressed as on_card=False plus settings.extras_bankroll.
+    so their book is addressed as on_card=False plus settings.extras_bankroll,
+    and the anytime-TD book as market=TD_MARKET plus settings.td_bankroll.
     """
     start = starting_bankroll if starting_bankroll is not None else starting_bankroll_for(strategy)
     curve = equity_curve(sport=sport, strategy=strategy, exclude_strategy=exclude_strategy,
+                         market=market, exclude_market=exclude_market,
                          on_card=on_card, starting_bankroll=start)
     if not curve:
         return {

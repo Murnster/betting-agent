@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from betting_agent.accounting.roi import get_summary
+from betting_agent.config import settings
 
 
 @dataclass
@@ -128,3 +129,67 @@ def test_graded_window_can_be_bounded_at_both_ends(monkeypatch):
     roi_mod.get_summary(sport="NFL", graded_since=datetime(2026, 9, 10),
                         graded_until=datetime(2026, 9, 10, 23, 59, 59))
     assert sum("picks.graded_at" in f for f in seen) == 2, seen
+
+
+def test_report_headline_and_bankroll_exclude_every_side_book(monkeypatch):
+    """The headline record is the MAIN book. The ladder, the straight overs
+    and the anytime-TD scorers stake their own paper bankrolls, so blending
+    them into one record and one equity line makes the headline a record of
+    nothing."""
+    from betting_agent.accounting import roi as roi_mod
+    from betting_agent.accounting.ledger import LADDER_STRATEGY, OVERS_STRATEGY, SIDE_BOOKS
+    from betting_agent.sports.nfl.td_props import TD_MARKET
+
+    summary_calls, ledger_calls = [], []
+
+    def fake_summary(**kwargs):
+        summary_calls.append(kwargs)
+        return {"total_bets": 16, "wins": 8, "losses": 7, "pushes": 0, "voids": 0,
+                "win_rate_pct": 53.3, "total_wagered": 29.1, "total_pnl": 3.03,
+                "roi_pct": 11.1, "avg_edge_pct": 4.0}
+
+    def fake_ledger(**kwargs):
+        ledger_calls.append(kwargs)
+        return {"starting_bankroll": 100.0, "current_bankroll": 103.03, "total_pnl": 3.03,
+                "peak_equity": 103.03, "max_drawdown": 0.0, "settled_picks": 16}
+
+    monkeypatch.setattr(roi_mod, "get_summary", fake_summary)
+    monkeypatch.setattr(roi_mod, "get_breakdown_by_bet_type", lambda **kw: [])
+    monkeypatch.setattr("betting_agent.accounting.ledger.ledger_summary", fake_ledger)
+
+    report = roi_mod.format_roi_report(sport="NFL", on_card=True)
+
+    assert summary_calls[0]["exclude_market"] == TD_MARKET
+    assert summary_calls[0]["exclude_strategy"] == SIDE_BOOKS
+    # Main bankroll charges neither the strategy-keyed books nor the TD board.
+    main_ledger = ledger_calls[0]
+    assert main_ledger["exclude_strategy"] == SIDE_BOOKS
+    assert TD_MARKET in main_ledger["exclude_market"]
+    # Each side book is then reported on its own bankroll, the TD one by
+    # market because its saved picks carry a NULL strategy.
+    side_scopes = ledger_calls[1:]
+    assert {c.get("strategy") for c in side_scopes} == {OVERS_STRATEGY, LADDER_STRATEGY, None}
+    td_scope = next(c for c in side_scopes if c.get("market") == TD_MARKET)
+    assert td_scope["starting_bankroll"] == settings.td_bankroll
+    assert "TD scorers (own bankroll)" in report
+
+
+def test_breakdown_forwards_the_same_exclusions_as_the_headline(monkeypatch):
+    """The per-bet-type breakdown sits directly under the headline record in
+    the results post. Unscoped, its PROP row read 15-28 / -16.7% beneath a
+    headline of 8-7 / +11.1% — it was still blending in the TD, ladder and
+    overs books."""
+    from betting_agent.accounting import roi as roi_mod
+
+    seen = []
+
+    def fake_summary(**kwargs):
+        seen.append(kwargs)
+        return {"total_bets": 0}
+
+    monkeypatch.setattr(roi_mod, "get_summary", fake_summary)
+    roi_mod.get_breakdown_by_bet_type(sport="NFL", on_card=True,
+                                      exclude_market="player_anytime_td",
+                                      exclude_strategy=("ladder", "overs"))
+    assert seen and all(c["exclude_market"] == "player_anytime_td" for c in seen)
+    assert all(c["exclude_strategy"] == ("ladder", "overs") for c in seen)

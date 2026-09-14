@@ -227,14 +227,19 @@ def get_breakdown_by_bet_type(
     season: int | None = None,
     graded_since: datetime | None = None,
     graded_until: datetime | None = None,
+    exclude_market: str | None = None,
+    exclude_strategy: str | list[str] | tuple[str, ...] | None = None,
     on_card: bool | None = None,
 ) -> list[dict]:
-    """Per-bet-type breakdown."""
+    """Per-bet-type breakdown, scoped the same way as get_summary — a caller
+    reporting the main book alone must be able to narrow this too, or the
+    breakdown contradicts the headline above it."""
     bet_types = ["moneyline", "spread", "total", "prop"]
     rows = []
     for bt in bet_types:
         summary = get_summary(sport=sport, since=since, until=until, bet_type=bt, season=season,
                               graded_since=graded_since, graded_until=graded_until,
+                              exclude_market=exclude_market, exclude_strategy=exclude_strategy,
                               on_card=on_card)
         if "total_bets" in summary and summary["total_bets"] > 0:
             rows.append({"bet_type": bt, **summary})
@@ -253,13 +258,30 @@ def format_roi_report(
     on_card scopes the report exactly as in get_summary: True = the picks that
     were offered on a card, False = the off-card evaluation set, None = both.
     Callers pass carded_only(sport) for a sport's normal scope.
+
+    The headline is the MAIN book only. The ladder hits, the straight overs
+    and the anytime-TD scorers each run on their own paper bankroll and get
+    their own section below — one headline blending four books with different
+    stakes and different purposes is not a record of anything.
     """
-    summary = get_summary(sport=sport, since=since, season=season, on_card=on_card)
+    from betting_agent.accounting.ledger import (
+        LADDER_STRATEGY,
+        OVERS_STRATEGY,
+        SIDE_BOOKS,
+        SIDE_MARKETS,
+        ledger_summary,
+    )
+    from betting_agent.config import settings
+    from betting_agent.sports.nfl.td_props import TD_MARKET
+
+    main_scope = {"exclude_strategy": SIDE_BOOKS, "exclude_market": TD_MARKET}
+    summary = get_summary(sport=sport, since=since, season=season, on_card=on_card,
+                          **main_scope)
     if "message" in summary:
         return f"\n{summary['message']}\n"
 
     breakdown = get_breakdown_by_bet_type(sport=sport, since=since, season=season,
-                                          on_card=on_card)
+                                          on_card=on_card, **main_scope)
 
     lines = [
         "",
@@ -290,8 +312,8 @@ def format_roi_report(
             f"{summary['line_moves_against']} against (props whose number moved by close)"
         )
 
-    from betting_agent.accounting.ledger import SIDE_BOOKS, ledger_summary
-    ledger = ledger_summary(sport=sport, exclude_strategy=SIDE_BOOKS, on_card=on_card)
+    ledger = ledger_summary(sport=sport, exclude_strategy=SIDE_BOOKS,
+                            exclude_market=SIDE_MARKETS, on_card=on_card)
     if ledger["settled_picks"]:
         lines += [
             "",
@@ -302,8 +324,16 @@ def format_roi_report(
             f"  Peak ${ledger['peak_equity']:,.2f}, max drawdown ${ledger['max_drawdown']:,.2f} "
             f"over {ledger['settled_picks']} settled picks",
         ]
-    for strategy, label in (("ladder", "Ladder hits"), ("overs", "Straight overs")):
-        side = ledger_summary(sport=sport, strategy=strategy, on_card=on_card)
+    # The side books, each on its own bankroll. The TD board is addressed by
+    # market rather than by strategy: its saved picks carry a NULL strategy
+    # and the past is not rewritten to give them one.
+    side_books: list[tuple[str, dict]] = [
+        ("Straight overs", {"strategy": OVERS_STRATEGY}),
+        ("Ladder hits", {"strategy": LADDER_STRATEGY}),
+        ("TD scorers", {"market": TD_MARKET, "starting_bankroll": settings.td_bankroll}),
+    ]
+    for label, scope in side_books:
+        side = ledger_summary(sport=sport, on_card=on_card, **scope)
         if side["settled_picks"]:
             lines += [
                 "",

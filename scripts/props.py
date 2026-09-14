@@ -873,7 +873,8 @@ def _print_candidates(candidates: list[BetCandidate], shadow: bool) -> None:
 
 def _print_td_scorers(td: list[BetCandidate], shadow: bool) -> None:
     for c in td:
-        tag = "PICK (paper)" if c.extra.get("td_pick") else "LEAN (below floor, stake 0)"
+        tag = ("PICK (paper, TD bankroll)" if c.extra.get("td_pick")
+               else "LEAN (below floor, stake 0)")
         verdict = c.agent_verdict or ""
         if verdict and verdict != "SKIPPED" and shadow:
             verdict += " (SHADOW)"
@@ -923,7 +924,8 @@ def _print_ladder(ladder: list[BetCandidate], shadow: bool) -> None:
 
 def _print_slate(slate: Slate, leans: list[BetCandidate], props: list[BetCandidate],
                  off_card: int, shadow: bool, td: list[BetCandidate] | None = None,
-                 td_off_card: int = 0, ladder: list[BetCandidate] | None = None,
+                 td_off_card: int = 0, td_bankroll: float | None = None,
+                 ladder: list[BetCandidate] | None = None,
                  ladder_off_card: int = 0, ladder_bankroll: float | None = None,
                  overs: list[BetCandidate] | None = None, overs_off_card: int = 0,
                  overs_bankroll: float | None = None) -> None:
@@ -936,17 +938,18 @@ def _print_slate(slate: Slate, leans: list[BetCandidate], props: list[BetCandida
                   f"fair {c.model_prob:5.1%} vs {c.implied_prob:5.1%}  edge {c.edge:+.1%}")
     else:
         print(f"  Game lean: none ({REFERENCE_BOOK} or a bettable book did not quote)")
-    if td:
-        print(f"  TD scorer{'s' if len(td) > 1 else ''} (best edge on the de-vigged Yes board; "
-              f"PICK inside the {edge_floor(TD_MARKET):.0%}-{edge_cap(TD_MARKET):.0%} window, "
-              f"else LEAN{f'; {td_off_card} more saved off-card' if td_off_card else ''}):")
-        _print_td_scorers(td, shadow)
     if props:
         print(f"  Props ({len(props)} on card, {off_card} more saved off-card):")
         _print_candidates(props, shadow)
     else:
         print(f"  Props: none clear the floors ({off_card} saved off-card)" if off_card
               else "  Props: none clear the floors")
+    if td:
+        bank = f", own bankroll ${td_bankroll:,.2f}" if td_bankroll is not None else ""
+        print(f"  TD scorer{'s' if len(td) > 1 else ''} (best edge on the de-vigged Yes board; "
+              f"PICK inside the {edge_floor(TD_MARKET):.0%}-{edge_cap(TD_MARKET):.0%} window, "
+              f"else LEAN{f'; {td_off_card} more saved off-card' if td_off_card else ''}{bank}):")
+        _print_td_scorers(td, shadow)
     if overs:
         bank = f", own bankroll ${overs_bankroll:,.2f}" if overs_bankroll is not None else ""
         print(f"  Straight overs — the book's main-line Over, best per game always a pick "
@@ -1023,6 +1026,8 @@ def main() -> None:
     parser.add_argument("--no-ladder", action="store_true",
                         help="Skip the ladder hits (alternate boards; saves 1 credit "
                              "per game per ladder market)")
+    parser.add_argument("--td-bankroll", type=float, default=None,
+                        help=f"Anytime-TD section's paper bankroll (default {settings.td_bankroll})")
     parser.add_argument("--ladder-bankroll", type=float, default=None,
                         help=f"Ladder section's paper bankroll (default {settings.ladder_bankroll})")
     parser.add_argument("--no-overs", action="store_true",
@@ -1078,6 +1083,7 @@ def main() -> None:
         models[m] = model
     fetch_td = settings.td_props_enabled and not args.no_td
     fetch_ladder = settings.ladder_enabled and not args.no_ladder
+    td_bankroll = args.td_bankroll or settings.td_bankroll
     ladder_bankroll = args.ladder_bankroll or settings.ladder_bankroll
     run_overs = settings.overs_enabled and not args.no_overs
     overs_bankroll = args.overs_bankroll or settings.overs_bankroll
@@ -1165,7 +1171,7 @@ def main() -> None:
     td_picks: list[BetCandidate] = []
     if td_model is not None:
         td_picks = generate_td_candidates(
-            events, td_model, bankroll, season, current_teams=roster, schedule=schedule,
+            events, td_model, td_bankroll, season, current_teams=roster, schedule=schedule,
             injuries=injuries, qb1=qb1, book_order=books, min_edge=min_edge,
         )
     # Straight overs first (the book's own number), then the ladder on the
@@ -1251,8 +1257,9 @@ def main() -> None:
         slate_overs = candidates_in_slate(overs_card, slate)
         overs_off_card = len(candidates_in_slate(over_picks, slate)) - len(slate_overs)
         cards.append((slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off_card,
-                      slate_overs, overs_off_card, extras))
+                      slate_overs, overs_off_card, extras, td_off_card))
         _print_slate(slate, card_leans, card_props, off_card, shadow, slate_td, td_off_card,
+                     td_bankroll=td_bankroll,
                      ladder=slate_ladder if ladder_models else None,
                      ladder_off_card=ladder_off_card, ladder_bankroll=ladder_bankroll,
                      overs=slate_overs if run_overs else None,
@@ -1295,7 +1302,7 @@ def main() -> None:
             cards_configured = is_discord_configured("NFL", "PICKS")
             extras_configured = settings.extras_enabled and is_discord_configured("NFL", "EXTRAS")
             for (slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off,
-                 slate_overs, overs_off, extras) in cards:
+                 slate_overs, overs_off, extras, td_off) in cards:
                 title = f"{slate.title()} — {slate.date}"
                 if cards_configured and any((card_leans, card_props, slate_td, slate_ladder,
                                              slate_overs)):
@@ -1303,6 +1310,7 @@ def main() -> None:
                     send_slate_to_discord(title, card_leans, card_props,
                                           bankroll, "NFL", agent_summary=agent_summary,
                                           extra_saved=off_card, td_scorers=slate_td,
+                                          td_saved=td_off, td_bankroll=td_bankroll,
                                           ladder=slate_ladder, ladder_saved=ladder_off,
                                           ladder_bankroll=ladder_bankroll,
                                           overs=slate_overs, overs_saved=overs_off,

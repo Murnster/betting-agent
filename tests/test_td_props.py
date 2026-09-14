@@ -15,7 +15,13 @@ import scripts.props as props_script
 from betting_agent.accounting.grader import _grade_prop
 from betting_agent.accounting.prop_clv import _closing_quote
 from betting_agent.intelligence.picks import BetCandidate
-from betting_agent.notifications.discord import _build_td_embed
+from betting_agent.notifications.discord import (
+    COLOR_GREEN,
+    _build_td_embed,
+    _build_td_header_embed,
+    _td_line,
+    send_slate_to_discord,
+)
 from betting_agent.sports.nfl.props import MARKET_STAT_COLUMNS, edge_cap, edge_floor, make_stat_lookup
 from betting_agent.sports.nfl.td_props import (
     TD_MARKET,
@@ -372,3 +378,43 @@ class TestTdEmbed:
         embed = _build_td_embed(self._cand(False), 2)
         assert embed["title"].endswith("(LEAN)")
         assert "Stake 0" in embed["description"] and "$" not in embed["description"]
+
+    def test_td_scorers_are_never_green(self):
+        """Green is the main card's picks. A TD scorer stakes its own paper
+        bankroll and is not in the main record, so it must not read as one."""
+        assert _build_td_embed(self._cand(True), 1)["color"] != COLOR_GREEN
+        assert _build_td_embed(self._cand(False), 1)["color"] != COLOR_GREEN
+
+    def test_header_embed_names_the_td_bankroll(self):
+        header = _build_td_header_embed([self._cand(True), self._cand(False)], 100.0, 2)
+        assert header["title"] == "TD SCORERS \u2014 2 on card"
+        assert "$100.00" in header["description"] and "$20.00" in header["description"]
+        assert "2 more TD pick(s) saved off-card" in header["description"]
+        assert header["color"] != COLOR_GREEN
+
+    def test_card_puts_td_below_the_props_behind_its_own_header(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr("betting_agent.notifications.discord._get_webhook_url",
+                            lambda *_a: "http://hook")
+        monkeypatch.setattr("betting_agent.notifications.discord._send_webhook",
+                            lambda url, payload: sent.append(payload) or True)
+        prop = BetCandidate(
+            game_id=0, external_id="evt1", home_team="KC", away_team="BUF",
+            game_date=date(2026, 9, 13), sport="NFL", bet_type="prop", pick_side="under",
+            player="Rashee Rice", market="player_receptions", line=4.5, model_prob=0.6,
+            implied_prob=0.52, edge=0.08, odds=-110, kelly_fraction=0.02,
+            recommended_bet=2.0, bankroll_at_pick=100.0, extra={"bookmaker": "draftkings"},
+        )
+        assert send_slate_to_discord("Card", [], [prop], 100.0, td_scorers=[self._cand(True)],
+                                     td_bankroll=100.0)
+        titles = [e.get("title", "") for e in sent[0]["embeds"]]
+        assert titles[1].startswith("#1")            # the prop pick comes first
+        assert titles[2].startswith("TD SCORERS")    # then the divider
+        assert titles[3].startswith("TD SCORER #1")
+
+    def test_alltime_line_carries_its_own_bankroll(self):
+        summary = {"total_bets": 9, "wins": 2, "losses": 7, "pushes": 0, "total_pnl": -0.70,
+                   "win_rate_pct": 22.2, "avg_fair_pct": 25.0}
+        line = _td_line(summary, label="TD scorers all-time", bankroll=100.0)
+        assert line.startswith("**TD scorers all-time (own bankroll):** 2-7-0")
+        assert "$100.00 \u2192 $99.30" in line

@@ -582,3 +582,25 @@ QB change mid-week), not for re-deriving the model.
       and TD legs are all on one game without any cross-section scaling
       (separate bankrolls, so this is about correlated outcomes, not stake
       concentration). Revisit with the TD window and the ladder review.
+
+- [ ] **The main record's headline still counts the game leans (noticed
+      2026-09-14 while splitting the TD book out).** `report.py` prints
+      11-13-0 where the prop record is 8-7-0: the difference is nine paper
+      leans (3 moneyline, 1 spread, 5 totals), which are stake-0 market views,
+      not picks. They cost nothing in P&L so the bankroll line is right, but
+      they distort Record, Win rate and Avg Edge. Discord already splits them
+      (`_lean_line`, `LEAN_BET_TYPES`); `format_roi_report` does not. Fix is
+      the same shape as the TD split: scope the headline to `bet_type="prop"`
+      for NFL and give the leans their own line. Left alone for now because
+      it changes the headline of every sport's report, not just NFL's.
+
+- [ ] **The main record's headline still counts the game leans (noticed
+      2026-09-14 while splitting the TD book out).** `report.py` prints
+      11-13-0 where the prop record is 8-7-0: the difference is nine paper
+      leans (3 moneyline, 1 spread, 5 totals), which are stake-0 market views,
+      not picks. They cost nothing in P&L so the bankroll line is right, but
+      they distort Record, Win rate and Avg Edge. Discord already splits them
+      (`_lean_line`, `LEAN_BET_TYPES`); `format_roi_report` does not. Fix is
+      the same shape as the TD split: scope the headline to `bet_type="prop"`
+      for NFL and give the leans their own line. Left alone for now because
+      it changes the headline of every sport's report, not just NFL's.

@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # the game lean (PICK inside the edge window, else LEAN at stake 0).
     td_props_enabled: bool = Field(default=True)
     td_props_per_game: int = Field(default=2)
+    # Anytime-TD scorers are their own paper book, like the ladder and the
+    # overs — a shadow board sized off its own bankroll so its stakes and P&L
+    # never move the main prop record. It is keyed on the market, not on
+    # Pick.strategy: the picks already saved carry a NULL strategy and the
+    # past is not rewritten to introduce one.
+    td_bankroll: float = Field(default=100.0, description="Anytime-TD section's paper bankroll")
     # Ladder hits — the "best overs" section: the player reaching a milestone
     # (60+ receiving yds, 6+ receptions, 40+ rushing) priced on the books'
     # alternate boards. One extra credit per game per market. Tracked as its
