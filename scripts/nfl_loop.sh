@@ -112,7 +112,7 @@ SHELL=/bin/bash
 # fetched unless a held pick kicks off inside the window)
 0  9-23 * * *     $PROJECT_ROOT/scripts/nfl_loop.sh closing >> $LOG_DIR/nfl_closing.log 2>&1
 # Grade every morning (stats for a Sunday land on nflverse Monday/Tuesday; re-runs are free)
-0  9  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh grade   >> $LOG_DIR/nfl_grade.log 2>&1
+0  8  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh grade   >> $LOG_DIR/nfl_grade.log 2>&1
 # Nightly database dump
 15 3  * * *     $PROJECT_ROOT/scripts/nfl_loop.sh backup  >> $LOG_DIR/nfl_backup.log 2>&1
 EOF
