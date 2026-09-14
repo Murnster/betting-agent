@@ -30,6 +30,7 @@ from betting_agent.sports.nfl.td_props import TD_MARKET
 
 LADDER_STRATEGY = "ladder"
 OVERS_STRATEGY = "overs"
+PARLAY_STRATEGIES = ("parlay", "parlay_leg")
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ COLOR_GREEN = 0x2ECC71   # positive P&L / picks
 COLOR_RED = 0xE74C3C     # negative P&L
 COLOR_GREY = 0x95A5A6    # no data
 COLOR_ORANGE = 0xE67E22  # straight-overs section
+COLOR_PURPLE = 0x9B59B6  # parlays — their own channel, never the card's green
 
 # Discord allows max 10 embeds per message
 MAX_EMBEDS_PER_MESSAGE = 10
@@ -541,6 +543,8 @@ def _result_lines(pick_details: list[dict[str, Any]], leans_labelled: bool) -> l
     """
     grouped: dict[str, list[str]] = {}
     for d in pick_details:
+        if d.get("bet_type") == "parlay" or d.get("strategy") in PARLAY_STRATEGIES:
+            continue  # own channel (send_parlay_results_to_discord)
         section = _result_section(d, leans_labelled)
         grouped.setdefault(section, []).append(_result_line(d, leans_labelled=leans_labelled))
 
@@ -1007,5 +1011,150 @@ def send_extras_results_to_discord(
         ]
         embeds.append({"title": f"Extras All-time — {sport}",
                        "description": "\n".join(at), "color": COLOR_BLUE})
+
+    return _send_webhook(url, {"embeds": embeds})
+
+
+# ---------------------------------------------------------------------------
+# Long-shot parlays — their own channel and their own paper bankroll
+# (intelligence/parlay.py). Never on the card, never in the results post.
+# ---------------------------------------------------------------------------
+
+def _leg_label(leg) -> str:
+    """A leg on one line: the pick, its price, the game it is in."""
+    if isinstance(leg, dict):
+        d = leg
+        if d.get("bet_type") == "prop":
+            line = f" {d['line']:g}" if d.get("line") is not None else ""
+            market = (d.get("market") or "").removeprefix("player_").replace("_", " ")
+            side = "anytime TD" if d.get("market") == TD_MARKET else f"{market} {d['pick_side']}{line}"
+            desc = f"{d.get('player') or '?'} {side}"
+        elif d.get("bet_type") == "moneyline":
+            desc = f"{d['pick_side']} ML"
+        else:
+            desc = str(d["pick_side"])
+        return f"{desc} `{d['odds']:+d}` — {d.get('away_team', '')} @ {d.get('home_team', '')}"
+    return f"{_pick_label(leg)} `{leg.odds:+d}` — {leg.away_team} @ {leg.home_team}"
+
+
+def _parlay_title(parent, legs_n: int) -> str:
+    kind = {"sgp": "SGP", "parlay": "PARLAY"}.get(parent.market, "PARLAY")
+    return f"{legs_n}-LEG {kind} · {parent.odds:+d}"
+
+
+def send_parlays_to_discord(title: str, parlays: list, bankroll: float,
+                            sport: str = "NFL") -> bool:
+    """Post the run's parlays to the parlays channel, one embed per ticket."""
+    url = _get_webhook_url(sport, "PARLAYS")
+    if not url:
+        logger.debug("Discord not configured for %s parlays, skipping", sport)
+        return False
+    if not parlays:
+        return True
+
+    header = {
+        "title": f"{SPORT_EMOJI.get(sport.upper(), '')} Parlays — {title}",
+        "description": (
+            f"{date.today()}\n\n"
+            f"**Bankroll:** ${bankroll:,.2f}  |  **{len(parlays)} ticket(s)**  |  "
+            f"**Action:** ${sum(p.parent.recommended_bet for p in parlays):.2f}\n"
+            "_Lottery tickets, flat stake, own bankroll — never counted in the main "
+            "record. Legs are recombined from the lines already fetched._"
+        ),
+        "color": COLOR_PURPLE,
+    }
+    embeds = [header]
+    for p in parlays:
+        parent = p.parent
+        label = {"sgp": "Same-game parlay", "window": "Cross-game parlay",
+                 "leans": "Lean parlay"}.get(p.kind, "Parlay")
+        lines = [f"**{label}** — {parent.away_team} @ {parent.home_team}" if p.same_game
+                 else f"**{label}**", ""]
+        lines += [f"`{i}` {_leg_label(leg)}  · model `{leg.model_prob:.0%}`"
+                  for i, leg in enumerate(p.legs, 1)]
+        lines += ["",
+                  f"**Stake:** `${parent.recommended_bet:.2f}` flat  |  "
+                  f"**Pays:** `${parent.recommended_bet * _decimal(parent.odds):.2f}`  |  "
+                  f"**Claimed P(hit):** `{parent.model_prob:.1%}`  vs  fair `{parent.implied_prob:.1%}`"]
+        if p.same_game:
+            lines.append("_Same game: the price is the product of the leg prices. The book's "
+                         "real SGP price will be lower — check it before staking._")
+        embeds.append({"title": _parlay_title(parent, len(p.legs)),
+                       "description": "\n".join(lines), "color": COLOR_PURPLE})
+
+    all_ok = True
+    for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
+        if not _send_webhook(url, {"embeds": embeds[i: i + MAX_EMBEDS_PER_MESSAGE]}):
+            all_ok = False
+    return all_ok
+
+
+def _decimal(odds: int) -> float:
+    return 1 + odds / 100 if odds > 0 else 1 + 100 / abs(odds)
+
+
+def send_parlay_results_to_discord(
+    summary: dict[str, Any],
+    sport: str,
+    graded_date: date | None = None,
+    parlays: list[dict] | None = None,
+    alltime_summary: dict[str, Any] | None = None,
+    starting_bankroll: float | None = None,
+) -> bool:
+    """
+    Grading results for the parlay book, in its own channel
+    (DISCORD_WEBHOOK_<SPORT>_PARLAYS_RESULTS): the day's tickets leg by leg,
+    the record, and the all-time bankroll line. Hit rate is read against the
+    mean claimed probability, never against 50%.
+    """
+    url = _get_webhook_url(sport, "PARLAYS_RESULTS")
+    if not url:
+        return False
+    if "total_bets" not in summary:
+        logger.debug("No graded %s parlays, skipping Discord", sport)
+        return True
+
+    pnl = summary.get("total_pnl", 0)
+    lines = [
+        f"**Record:** {summary.get('wins', 0)}-{summary.get('losses', 0)}"
+        f"-{summary.get('pushes', 0)}  |  "
+        f"**P&L:** {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}  |  "
+        f"**ROI:** {summary.get('roi_pct', 0):+.2f}%",
+    ]
+    if parlays:
+        claimed = sum(p["model_prob"] for p in parlays) / len(parlays)
+        hits = sum(1 for p in parlays if p["result"] == "win")
+        lines.append(f"**Hit:** {hits}/{len(parlays)} vs claimed `{claimed:.1%}` per ticket")
+        for p in parlays:
+            tag = p["result"].upper()
+            pnl_str = f"+${p['pnl']:,.2f}" if p["pnl"] >= 0 else f"-${abs(p['pnl']):,.2f}"
+            lines += ["", f"`{tag}`  **{p['label']}** `{p['odds']:+d}` — {pnl_str}"]
+            for leg in p["legs"]:
+                mark = {"win": "\u2705", "loss": "\u274c", "push": "\u27a1\ufe0f",
+                        "void": "\u2796"}.get(leg["result"] or "", "\u2753")
+                lines.append(f"  {mark} {_leg_label(leg)}")
+
+    date_str = str(graded_date) if graded_date else ""
+    embeds = [{
+        "title": f"Parlay Results — {sport}",
+        "description": (f"{date_str}\n\n" if date_str else "") + "\n".join(lines),
+        "color": COLOR_GREEN if pnl > 0 else COLOR_RED if pnl < 0 else COLOR_GREY,
+    }]
+
+    if alltime_summary and "total_bets" in alltime_summary:
+        at_pnl = alltime_summary.get("total_pnl", 0)
+        start = starting_bankroll if starting_bankroll is not None else 0.0
+        at = [
+            f"**Record:** {alltime_summary.get('wins', 0)}-{alltime_summary.get('losses', 0)}"
+            f"-{alltime_summary.get('pushes', 0)} "
+            f"({alltime_summary.get('win_rate_pct', 0):.1f}%)  |  "
+            f"**ROI:** {alltime_summary.get('roi_pct', 0):+.2f}%",
+            f"**Bankroll:** ${start:,.2f} → ${start + at_pnl:,.2f}  |  "
+            f"**P&L:** {'+' if at_pnl >= 0 else '-'}${abs(at_pnl):,.2f}",
+            "_Lottery tickets: expect a low hit rate and a bankroll that bleeds between "
+            "hits. The question is whether the hits pay for the misses._",
+        ]
+        embeds.append({"title": f"Parlays All-time — {sport}",
+                       "description": "\n".join(at), "color": COLOR_PURPLE})
 
     return _send_webhook(url, {"embeds": embeds})

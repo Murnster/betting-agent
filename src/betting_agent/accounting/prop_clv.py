@@ -222,6 +222,11 @@ def capture_closing_lines_for_upcoming(
             .filter(Game.external_id.in_(event_ids))
             .all()
         )
+        # A parlay ticket has no market to capture and its legs are stake-0
+        # copies of lines already held elsewhere — neither may be the reason
+        # a game's props get fetched (a credit per market).
+        open_picks = [p for p in open_picks
+                      if p.bet_type != "parlay" and p.strategy != "parlay_leg"]
         props = [p for p in open_picks if p.bet_type == "prop"]
         games = [p for p in open_picks if p.bet_type in ("moneyline", "spread", "total")]
         if not open_picks:

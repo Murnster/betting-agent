@@ -21,6 +21,7 @@ from betting_agent.accounting.grader import _calculate_pnl
 from betting_agent.accounting.ledger import (
     LADDER_STRATEGY,
     OVERS_STRATEGY,
+    PARLAY_STRATEGY,
     SIDE_BOOKS,
     SIDE_MARKETS,
     equity_curve,
@@ -112,7 +113,8 @@ def cmd_ledger(args) -> None:
     for label, scope in (("Straight overs", {"strategy": OVERS_STRATEGY}),
                          ("Ladder hits", {"strategy": LADDER_STRATEGY}),
                          ("TD scorers", {"market": TD_MARKET,
-                                         "starting_bankroll": settings.td_bankroll})):
+                                         "starting_bankroll": settings.td_bankroll}),
+                         ("Parlays", {"strategy": PARLAY_STRATEGY})):
         side = ledger_summary(sport=sport, on_card=on_card, **scope)
         if side["settled_picks"]:
             print(f"{label:<15} ${side['starting_bankroll']:,.2f} → "

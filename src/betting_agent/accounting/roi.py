@@ -267,6 +267,7 @@ def format_roi_report(
     from betting_agent.accounting.ledger import (
         LADDER_STRATEGY,
         OVERS_STRATEGY,
+        PARLAY_STRATEGY,
         SIDE_BOOKS,
         SIDE_MARKETS,
         ledger_summary,
@@ -331,6 +332,7 @@ def format_roi_report(
         ("Straight overs", {"strategy": OVERS_STRATEGY}),
         ("Ladder hits", {"strategy": LADDER_STRATEGY}),
         ("TD scorers", {"market": TD_MARKET, "starting_bankroll": settings.td_bankroll}),
+        ("Parlays", {"strategy": PARLAY_STRATEGY}),
     ]
     for label, scope in side_books:
         side = ledger_summary(sport=sport, on_card=on_card, **scope)

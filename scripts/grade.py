@@ -14,6 +14,7 @@ from datetime import date, datetime, time
 
 from betting_agent.accounting.clv import update_clv_for_picks
 from betting_agent.accounting.grader import grade_picks
+from betting_agent.accounting.parlays import graded_parlays, settle_parlays
 from betting_agent.accounting.roi import carded_only, format_roi_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -121,6 +122,14 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Prop grading failed: %s", exc)
 
+        # Parlays settle as the AND of their legs, once the legs are graded.
+        try:
+            n_parlays = settle_parlays()
+            if n_parlays:
+                print(f"Settled {n_parlays} parlay(s).")
+        except Exception as exc:
+            logger.warning("Parlay settlement failed: %s", exc)
+
         try:
             n_clv = update_clv_for_picks()
             print(f"Updated CLV for {n_clv} picks.")
@@ -148,9 +157,15 @@ def main() -> None:
                 is_discord_configured,
                 send_alltime_to_discord,
                 send_extras_results_to_discord,
+                send_parlay_results_to_discord,
                 send_results_to_discord,
             )
-            from betting_agent.accounting.ledger import LADDER_STRATEGY, OVERS_STRATEGY, SIDE_BOOKS
+            from betting_agent.accounting.ledger import (
+                LADDER_STRATEGY,
+                OVERS_STRATEGY,
+                PARLAY_STRATEGY,
+                SIDE_BOOKS,
+            )
             from betting_agent.sports.nfl.td_props import TD_MARKET
             from betting_agent.sports.registry import available_sports
 
@@ -249,6 +264,21 @@ def main() -> None:
                             pick_details=extras_detail,
                             alltime_summary=get_summary(sport=sport_name, **ex, until=until_date),
                             starting_bankroll=settings.extras_bankroll,
+                        )
+
+                # The parlay book: own channel, own bankroll, its tickets
+                # leg by leg. Never in the results channel.
+                if (sport_name == "NFL" and settings.parlays_enabled
+                        and is_discord_configured(sport_name, "PARLAYS_RESULTS")):
+                    pq = {"strategy": PARLAY_STRATEGY}
+                    parlay_summary = get_summary(sport=sport_name, **pq, **grade_window)
+                    if "total_bets" in parlay_summary:
+                        logger.info("Sending parlay results to Discord (%s)...", sport_name)
+                        send_parlay_results_to_discord(
+                            parlay_summary, sport_name, graded_date,
+                            parlays=graded_parlays(sport_name, **grade_window),
+                            alltime_summary=get_summary(sport=sport_name, **pq, until=until_date),
+                            starting_bankroll=settings.parlay_bankroll,
                         )
 
             # Shared all-time channel: everything except the inline sports.

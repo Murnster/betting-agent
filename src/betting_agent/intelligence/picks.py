@@ -539,6 +539,105 @@ def save_picks_to_db(candidates: list[BetCandidate]) -> None:
         )
 
 
+def save_parlays_to_db(parlays, priced_external_ids: set[str] | None = None) -> None:
+    """
+    Persist parlays: the parent row first (it needs an id), then its legs
+    pointing at it. A parent is keyed like any pick — (game, "parlay", label,
+    market, "parlay") — so a re-run on the same slate refreshes the ticket
+    (price, probabilities) and replaces its ungraded legs rather than adding a
+    second ticket. Settled parlays are history and are never touched.
+
+    A re-run is a new offer here too: an ungraded parlay anchored on one of
+    the games this run priced (`priced_external_ids`) that the run did not
+    rebuild comes off the card, exactly as `_retire_superseded` does for the
+    sections. Legs never carry on_card.
+    """
+    if not parlays and not priced_external_ids:
+        return
+    from betting_agent.db.queries import get_game_by_external_id
+
+    with get_session() as session:
+        live: set[tuple] = set()
+        added = refreshed = skipped = 0
+        for parlay in parlays:
+            parent = parlay.parent
+            try:
+                game_id = _resolve_game_id(session, parent)
+            except ValueError as exc:
+                logger.warning("Skipping parlay: %s", exc)
+                continue
+            key = (game_id, parent.bet_type, parent.pick_side, parent.market or "",
+                   parent.strategy or "")
+            live.add(key)
+            row = (session.query(Pick)
+                   .filter(Pick.game_id == game_id, Pick.bet_type == parent.bet_type,
+                           Pick.pick_side == parent.pick_side, Pick.market == parent.market,
+                           Pick.strategy == parent.strategy)
+                   .first())
+            if row is not None and row.result is not None:
+                skipped += 1
+                continue
+            if row is None:
+                row = Pick(game_id=game_id, sport=parent.sport, pick_date=parent.game_date,
+                           bet_type=parent.bet_type, pick_side=parent.pick_side,
+                           market=parent.market, strategy=parent.strategy, line=None,
+                           model_prob=parent.model_prob, implied_prob=parent.implied_prob,
+                           edge=parent.edge, odds=parent.odds)
+                session.add(row)
+                added += 1
+            else:
+                for leg in session.query(Pick).filter(Pick.parlay_id == row.id).all():
+                    session.delete(leg)
+                refreshed += 1
+            row.model_prob = parent.model_prob
+            row.implied_prob = parent.implied_prob
+            row.edge = parent.edge
+            row.odds = parent.odds
+            row.kelly_fraction = 0.0
+            row.recommended_bet = parent.recommended_bet
+            row.bankroll_at_pick = parent.bankroll_at_pick
+            row.on_card = True
+            session.flush()
+            for leg in parlay.legs:
+                try:
+                    leg_game = _resolve_game_id(session, leg)
+                except ValueError as exc:
+                    logger.warning("Skipping parlay leg: %s", exc)
+                    continue
+                session.add(Pick(
+                    game_id=leg_game, sport=leg.sport, pick_date=leg.game_date,
+                    bet_type=leg.bet_type, pick_side=leg.pick_side, line=leg.line,
+                    player=leg.player, market=leg.market, model_prob=leg.model_prob,
+                    implied_prob=leg.implied_prob, edge=leg.edge, odds=leg.odds,
+                    kelly_fraction=0.0, recommended_bet=0.0, bankroll_at_pick=0.0,
+                    on_card=False, strategy=leg.strategy, parlay_id=row.id,
+                ))
+
+        retired = 0
+        if priced_external_ids:
+            game_ids = set()
+            for ext in priced_external_ids:
+                norm = _normalize_external_id(ext)
+                game = get_game_by_external_id(session, norm) if norm else None
+                if game is not None:
+                    game_ids.add(game.id)
+            if game_ids:
+                stale = (session.query(Pick)
+                         .filter(Pick.game_id.in_(game_ids), Pick.bet_type == "parlay",
+                                 Pick.on_card.is_(True), Pick.result.is_(None))
+                         .all())
+                for row in stale:
+                    key = (row.game_id, row.bet_type, row.pick_side, row.market or "",
+                           row.strategy or "")
+                    if key not in live:
+                        row.on_card = False
+                        retired += 1
+
+    if added or refreshed or skipped or retired:
+        logger.info("Saved %d new parlay(s), refreshed %d, skipped %d settled, retired %d",
+                    added, refreshed, skipped, retired)
+
+
 def _retire_superseded(existing_rows: list[Pick], live_keys: set[tuple]) -> int:
     """
     Clear on_card on the ungraded picks this run's card replaced.

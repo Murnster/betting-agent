@@ -114,16 +114,9 @@ def _quotes(event: dict) -> dict[str, dict]:
     return {q["book_key"]: q for q in OddsAPIClient()._quotes_for_game(event, None)}
 
 
-def game_leans(odds_events: list[dict], book_order: list[str], bankroll: float,
-               reference: str = REFERENCE_BOOK, pick_date: date | None = None,
-               ) -> list[BetCandidate]:
-    """
-    One lean per event: the best-edge side at the first book in `book_order`
-    that quotes the game, against `reference`'s fair price. Events without a
-    reference quote produce nothing (logged).
-    """
-    pick_date = pick_date or date.today()
-    leans: list[BetCandidate] = []
+def _event_sides(odds_events: list[dict], book_order: list[str], reference: str):
+    """Per event: (event, book_key, fair, sides) at the first book in
+    `book_order` that quotes it, against `reference`'s fair price."""
     for event in odds_events:
         quotes = _quotes(event)
         ref = quotes.get(reference)
@@ -138,28 +131,62 @@ def game_leans(odds_events: list[dict], book_order: list[str], bankroll: float,
             continue
         fair = fair_from_reference(ref)
         sides = _sides(event, quotes[book_key], fair)
-        if not sides:
-            continue
-        best = max(sides, key=lambda s: s["edge"])
-        kelly, stake = recommended_bet(best["model_prob"], best["odds"], best["edge"], bankroll)
-        ct = event.get("commence_time")
-        sched = date.fromisoformat(ct[:10]) if isinstance(ct, str) and len(ct) >= 10 else None
-        leans.append(BetCandidate(
-            game_id=0, external_id=event.get("id"),
-            home_team=event.get("home_team", ""), away_team=event.get("away_team", ""),
-            game_date=pick_date, scheduled_game_date=sched, sport="NFL",
-            bet_type=best["bet_type"], pick_side=best["pick_side"], line=best["line"],
-            model_prob=best["model_prob"], implied_prob=best["implied_prob"],
-            edge=best["edge"], odds=best["odds"],
-            kelly_fraction=kelly if best["edge"] > 0 else 0.0,
-            recommended_bet=stake if best["edge"] > 0 else 0.0,
-            bankroll_at_pick=bankroll,
-            extra={"lean": True, "reference": reference, "bookmaker": book_key,
-                   "reference_home_prob": fair.get("home_prob"),
-                   "reference_mu_margin": fair.get("mu_margin"),
-                   "reference_mu_total": fair.get("mu_total")},
-        ))
-    return leans
+        if sides:
+            yield event, book_key, fair, sides
+
+
+def _side_candidate(event: dict, book_key: str, fair: dict, side: dict, bankroll: float,
+                    reference: str, pick_date: date) -> BetCandidate:
+    kelly, stake = recommended_bet(side["model_prob"], side["odds"], side["edge"], bankroll)
+    ct = event.get("commence_time")
+    sched = date.fromisoformat(ct[:10]) if isinstance(ct, str) and len(ct) >= 10 else None
+    return BetCandidate(
+        game_id=0, external_id=event.get("id"),
+        home_team=event.get("home_team", ""), away_team=event.get("away_team", ""),
+        game_date=pick_date, scheduled_game_date=sched, sport="NFL",
+        bet_type=side["bet_type"], pick_side=side["pick_side"], line=side["line"],
+        model_prob=side["model_prob"], implied_prob=side["implied_prob"],
+        edge=side["edge"], odds=side["odds"],
+        kelly_fraction=kelly if side["edge"] > 0 else 0.0,
+        recommended_bet=stake if side["edge"] > 0 else 0.0,
+        bankroll_at_pick=bankroll,
+        extra={"lean": True, "reference": reference, "bookmaker": book_key,
+               "reference_home_prob": fair.get("home_prob"),
+               "reference_mu_margin": fair.get("mu_margin"),
+               "reference_mu_total": fair.get("mu_total")},
+    )
+
+
+def game_leans(odds_events: list[dict], book_order: list[str], bankroll: float,
+               reference: str = REFERENCE_BOOK, pick_date: date | None = None,
+               ) -> list[BetCandidate]:
+    """
+    One lean per event: the best-edge side at the first book in `book_order`
+    that quotes the game, against `reference`'s fair price. Events without a
+    reference quote produce nothing (logged).
+    """
+    pick_date = pick_date or date.today()
+    return [
+        _side_candidate(event, book_key, fair, max(sides, key=lambda s: s["edge"]),
+                        bankroll, reference, pick_date)
+        for event, book_key, fair, sides in _event_sides(odds_events, book_order, reference)
+    ]
+
+
+def game_sides(odds_events: list[dict], book_order: list[str], bankroll: float,
+               reference: str = REFERENCE_BOOK, pick_date: date | None = None,
+               ) -> list[BetCandidate]:
+    """
+    EVERY bettable side of every event, priced like a lean — the leg pool
+    for the parlays, which want the whole board and not only the game's
+    best side. Same lines, same call, no extra credits.
+    """
+    pick_date = pick_date or date.today()
+    return [
+        _side_candidate(event, book_key, fair, side, bankroll, reference, pick_date)
+        for event, book_key, fair, sides in _event_sides(odds_events, book_order, reference)
+        for side in sides
+    ]
 
 
 def fetch_game_lines(events: list[dict], bookmakers: list[str],

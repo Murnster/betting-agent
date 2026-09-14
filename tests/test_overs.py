@@ -165,7 +165,7 @@ class TestOversAccounting:
         assert ledger_mod.starting_bankroll_for("overs") == 40.0
         assert ledger_mod.starting_bankroll_for("ladder") == 50.0
         assert ledger_mod.starting_bankroll_for(None) == 100.0
-        assert ledger_mod.SIDE_BOOKS == ("ladder", "overs")
+        assert ledger_mod.SIDE_BOOKS == ("ladder", "overs", "parlay", "parlay_leg")
 
         from betting_agent.db.models import Pick
 

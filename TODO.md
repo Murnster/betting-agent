@@ -408,7 +408,29 @@ applied):
   they compound edge (4 legs claimed at 70% but truly 60% → 24% claimed vs
   13% true), the Odds API posts no parlay price so the paper price would be
   synthetic, and one parlay a week is a far worse measuring instrument than
-  eight singles over an 18-week season.
+  eight singles over an 18-week season. (Superseded in scope, not in
+  reasoning, on 2026-09-14 — see the parlay book entry below: the user wants
+  it as a separate lottery-ticket pool, and it is built as one.)
+- [x] **Long-shot parlay book (2026-09-14, user: "3 props total that make
+  sense to parlay together" per primetime game, a parlay per Sunday window,
+  and "a long-shot lean parlay across games, being 3-5 picks of ML, Over
+  Under, Spread").** `intelligence/parlay.py` + `accounting/parlays.py`,
+  own channels (`DISCORD_WEBHOOK_NFL_PARLAYS[_RESULTS]`), own bankroll
+  (`PARLAY_BANKROLL`, $1 flat tickets), `Pick.strategy` "parlay" / "parlay_leg"
+  with `picks.parlay_id`, zero credits. The Sep 10 objections stand and are
+  the framing: an experiment, not an edge. Phase-1 dials left for later:
+  (a) legs are drawn only from what the run already scored (the section
+  candidates post-floor plus every game side) — widening to below-floor
+  lines is a `min_edge` pass on the generators; (b) the same-game price is
+  the product of the leg prices and the book's real SGP price is lower, so
+  the review must read SGP tickets' ROI as an upper bound and the cross-game
+  ones as honest; (c) the lean parlay is built from the 12:45 Sunday run's
+  games, so SNF is never in it — including it means fetching lines for the
+  night game from the midday run (same 3 credits, but the night game's lean
+  would then be saved eight hours out, which the Sep 13 change stopped).
+  Review with the ladder and the TD window: hit rate vs mean claimed
+  probability per ticket kind (sgp / window / leans), and whether any kind
+  pays for its misses.
 - [ ] **Review the card width after ~6 weeks of extras data.** The whole point
   of the extras channel: compare its all-time line with the main card's. If
   the extras keep pace, widen `WINDOW_PROP_CAP` / `PRIMETIME_PROP_CAP`; if

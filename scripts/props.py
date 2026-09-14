@@ -58,8 +58,14 @@ import pandas as pd
 from betting_agent.config import settings
 from betting_agent.intelligence.ev import american_to_implied_prob, remove_vig
 from betting_agent.intelligence.kelly import recommended_bet
-from betting_agent.intelligence.game_lean import REFERENCE_BOOK, fetch_game_lines, game_leans
-from betting_agent.intelligence.picks import BetCandidate, save_picks_to_db
+from betting_agent.intelligence.game_lean import (
+    REFERENCE_BOOK,
+    fetch_game_lines,
+    game_leans,
+    game_sides,
+)
+from betting_agent.intelligence.parlay import Parlay, build_parlays
+from betting_agent.intelligence.picks import BetCandidate, save_parlays_to_db, save_picks_to_db
 from betting_agent.intelligence.slate import (
     candidates_in_slate,
     cap_per_slate,
@@ -922,6 +928,22 @@ def _print_ladder(ladder: list[BetCandidate], shadow: bool) -> None:
             print(f"{'':<28} > {reason}")
 
 
+def _print_parlays(parlays: list[Parlay], bankroll: float) -> None:
+    from betting_agent.intelligence.picks import _pick_label
+
+    print(f"\n{'=' * 70}\n  PARLAYS  (own paper book, ${bankroll:,.2f}; ${parlays[0].parent.recommended_bet:.2f} flat)"
+          f"\n{'=' * 70}")
+    for p in parlays:
+        parent = p.parent
+        where = f" — {parent.away_team} @ {parent.home_team}" if p.same_game else ""
+        print(f"\n  {parent.pick_side.upper()} {parent.odds:+d}{where}  "
+              f"claimed {parent.model_prob:.1%} vs fair {parent.implied_prob:.1%}"
+              + ("  [SGP: product price, book will be lower]" if p.same_game else ""))
+        for i, leg in enumerate(p.legs, 1):
+            print(f"    {i}. {_pick_label(leg)} {leg.odds:+d}  ({leg.away_team} @ {leg.home_team}) "
+                  f"model {leg.model_prob:.0%}")
+
+
 def _print_slate(slate: Slate, leans: list[BetCandidate], props: list[BetCandidate],
                  off_card: int, shadow: bool, td: list[BetCandidate] | None = None,
                  td_off_card: int = 0, td_bankroll: float | None = None,
@@ -1030,6 +1052,11 @@ def main() -> None:
                         help=f"Anytime-TD section's paper bankroll (default {settings.td_bankroll})")
     parser.add_argument("--ladder-bankroll", type=float, default=None,
                         help=f"Ladder section's paper bankroll (default {settings.ladder_bankroll})")
+    parser.add_argument("--no-parlays", action="store_true",
+                        help="Skip the long-shot parlays (own paper book and channel; "
+                             "no credits either way)")
+    parser.add_argument("--parlay-bankroll", type=float, default=None,
+                        help=f"Parlay book's paper bankroll (default {settings.parlay_bankroll})")
     parser.add_argument("--no-overs", action="store_true",
                         help="Skip the straight-overs section (no credits involved)")
     parser.add_argument("--overs-bankroll", type=float, default=None,
@@ -1087,6 +1114,8 @@ def main() -> None:
     ladder_bankroll = args.ladder_bankroll or settings.ladder_bankroll
     run_overs = settings.overs_enabled and not args.no_overs
     overs_bankroll = args.overs_bankroll or settings.overs_bankroll
+    run_parlays = settings.parlays_enabled and not args.no_parlays
+    parlay_bankroll = args.parlay_bankroll or settings.parlay_bankroll
     ladder_bases = ladder_markets() if fetch_ladder else []
     # The ladder shares the receiving models (their tail calibrators) and
     # adds a rushing-yards model of its own — ladder only, no main-card use.
@@ -1235,12 +1264,21 @@ def main() -> None:
     # ---- Cards: one per slate. Leans = the market's sharpest price vs the
     # bettable book (paper only, tracked for CLV); TD scorers; props = the picks. ----
     leans: list[BetCandidate] = []
+    lean_sides: list[BetCandidate] = []
     if not args.no_leans:
         try:
             lines = fetch_game_lines(events, books + [REFERENCE_BOOK])
             leans = game_leans(lines, books, bankroll)
+            # Every side on the board, for the parlays — same call, no credits.
+            lean_sides = game_sides(lines, books, bankroll)
         except Exception as exc:
             logger.warning("Game leans unavailable: %s", exc)
+    # Long-shot parlays: recombined from the sections above and the lean
+    # board. Their own book — nothing here touches the card.
+    parlays: list[Parlay] = []
+    if run_parlays:
+        parlays = build_parlays(slates, [candidates, td_picks, over_picks, ladder_picks],
+                                lean_sides, bankroll=parlay_bankroll)
     cards = []
     for slate in slates:
         card_props = select_card(candidates, slate, slate.prop_cap)
@@ -1265,6 +1303,9 @@ def main() -> None:
                      overs=slate_overs if run_overs else None,
                      overs_off_card=overs_off_card, overs_bankroll=overs_bankroll)
 
+    if parlays:
+        _print_parlays(parlays, parlay_bankroll)
+
     if agent_summary:
         print(f"\nValidator{' (SHADOW — verdicts recorded, stakes untouched)' if shadow else ''}: "
               f"{agent_summary['validated_games']} games, "
@@ -1276,13 +1317,15 @@ def main() -> None:
           f"{len(over_picks)} straight overs ({sum(len(c[7]) for c in cards)} on cards, own bankroll), "
           f"{len(ladder_picks)} ladder hits ({sum(len(c[5]) for c in cards)} on cards, "
           "own bankroll), "
-          f"{len(leans)} game leans. "
+          f"{len(leans)} game leans, {len(parlays)} parlays (own bankroll). "
           "These are NOT bets — Phase 3 validates the projections first.")
 
     if args.save:
         save_picks_to_db(candidates + td_picks + over_picks + ladder_picks + leans)
         print("Saved to picks table (props + TD scorers + overs + ladder + leans; "
               "on_card marks the card).")
+        if run_parlays:
+            save_parlays_to_db(parlays, {str(e.get("id")) for e in events if e.get("id")})
         if validation_records:
             try:
                 from betting_agent.intelligence.validator import save_agent_validations_to_db
@@ -1297,9 +1340,14 @@ def main() -> None:
             from betting_agent.notifications.discord import (
                 is_discord_configured,
                 send_extras_to_discord,
+                send_parlays_to_discord,
                 send_slate_to_discord,
             )
             cards_configured = is_discord_configured("NFL", "PICKS")
+            if parlays and is_discord_configured("NFL", "PARLAYS"):
+                day = slates[0].date if slates else date.today()
+                logger.info("Sending %d parlay(s) to Discord...", len(parlays))
+                send_parlays_to_discord(str(day), parlays, parlay_bankroll, "NFL")
             extras_configured = settings.extras_enabled and is_discord_configured("NFL", "EXTRAS")
             for (slate, card_leans, card_props, off_card, slate_td, slate_ladder, ladder_off,
                  slate_overs, overs_off, extras, td_off) in cards:

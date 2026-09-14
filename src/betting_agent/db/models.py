@@ -160,6 +160,7 @@ class Pick(Base):
     closing_line = Column(Float, nullable=True)         # props: line at close (may differ)
     on_card = Column(Boolean, nullable=False, default=False, server_default="false")  # shown on the slate card
     strategy = Column(String(20), nullable=True)        # paper book: NULL = default, "ladder" = ladder hits
+    parlay_id = Column(Integer, ForeignKey("picks.id"), nullable=True, index=True)  # legs → their parlay
     clv = Column(Float, nullable=True)                  # closing line value
     pnl = Column(Float, nullable=True)                  # profit/loss in dollars
     graded_at = Column(TIMESTAMPTZ, nullable=True)

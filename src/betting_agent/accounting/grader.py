@@ -228,6 +228,10 @@ def grade_picks(target_date: date | None = None) -> int:
                 # Props need player stats, not game scores — graded separately
                 # by grade_prop_picks().
                 continue
+            elif pick.bet_type == "parlay":
+                # The AND of its legs — settled by accounting/parlays.py once
+                # every leg is graded.
+                continue
             else:
                 logger.warning(
                     "No grader for bet_type '%s' (pick %s) — left ungraded",

@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # paper bankroll so their ROI is readable next to the card's.
     extras_enabled: bool = Field(default=True)
     extras_bankroll: float = Field(default=100.0, description="Off-card props' paper bankroll")
+    # Long-shot parlays (user, Sep 14 2026): a 3-leg same-game parlay per
+    # primetime game, a 3-leg cross-game parlay per Sunday window and a 3-5
+    # leg lean parlay across the Sunday games, each a flat $1 lottery ticket
+    # from its own paper bankroll (Pick.strategy = "parlay"). Own Discord
+    # channels, never on the card. No extra credits: every leg is recombined
+    # from lines the run already fetched.
+    parlays_enabled: bool = Field(default=True)
+    parlay_bankroll: float = Field(default=100.0, description="Parlay book's paper bankroll")
     ladder_markets: str = Field(
         default="player_receptions,player_reception_yds,player_rush_yds",
         description=(

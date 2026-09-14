@@ -25,9 +25,15 @@ from betting_agent.sports.nfl.td_props import TD_MARKET
 LADDER_STRATEGY = "ladder"
 #: Pick.strategy of the straight-overs section (main-line Overs, own bankroll).
 OVERS_STRATEGY = "overs"
+#: Pick.strategy of a long-shot parlay (the parent row: combined odds, flat
+#: stake, own bankroll) and of its legs (stake 0, never a record of their own;
+#: they exist so the normal graders settle them and the parlay ANDs them).
+PARLAY_STRATEGY = "parlay"
+PARLAY_LEG_STRATEGY = "parlay_leg"
 #: Every side book addressed by Pick.strategy; the main prop summaries
 #: exclude all of them.
-SIDE_BOOKS: tuple[str, ...] = (LADDER_STRATEGY, OVERS_STRATEGY)
+SIDE_BOOKS: tuple[str, ...] = (LADDER_STRATEGY, OVERS_STRATEGY, PARLAY_STRATEGY,
+                               PARLAY_LEG_STRATEGY)
 #: The anytime-TD board is a side book too, but it is addressed by MARKET
 #: rather than by Pick.strategy: every TD pick already saved carries a NULL
 #: strategy, and tagging them now would rewrite the past. Excluding the
@@ -40,6 +46,8 @@ def starting_bankroll_for(strategy: str | None) -> float:
         return settings.ladder_bankroll
     if strategy == OVERS_STRATEGY:
         return settings.overs_bankroll
+    if strategy == PARLAY_STRATEGY:
+        return settings.parlay_bankroll
     return settings.starting_bankroll
 
 

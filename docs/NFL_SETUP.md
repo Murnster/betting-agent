@@ -131,6 +131,10 @@ ODDS_API_KEY=<your key>
 DISCORD_ENABLED=true
 DISCORD_WEBHOOK_NFL_PICKS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_NFL_RESULTS=https://discord.com/api/webhooks/...
+DISCORD_WEBHOOK_NFL_EXTRAS=...             # off-card props (own book)
+DISCORD_WEBHOOK_NFL_EXTRAS_RESULTS=...
+DISCORD_WEBHOOK_NFL_PARLAYS=...            # long-shot parlays (own book)
+DISCORD_WEBHOOK_NFL_PARLAYS_RESULTS=...
 
 # --- books: The Odds API has NO bet365 player props; DraftKings/FanDuel price the card ---
 # PREFERRED_BOOKMAKERS=                      (default empty; the props path
@@ -141,12 +145,14 @@ DISCORD_WEBHOOK_NFL_RESULTS=https://discord.com/api/webhooks/...
 STARTING_BANKROLL=1000.0          # main props card
 LADDER_BANKROLL=100.0             # ladder hits (own book)
 OVERS_BANKROLL=100.0              # straight overs (own book)
+PARLAY_BANKROLL=100.0             # long-shot parlays (own book, $1 flat tickets)
 
 # --- sections (all on by default) ---
 # TD_PROPS_ENABLED=true           # anytime-TD scorer, +1 credit/game
 # LADDER_ENABLED=true             # alternate boards, +3 credits/game
 # LADDER_MARKETS=player_receptions,player_reception_yds,player_rush_yds
 # OVERS_ENABLED=true              # main-line overs, free
+# PARLAYS_ENABLED=true            # long-shot parlays, free (legs recombined)
 
 # --- validator: Opus via the local claude CLI, every game, nothing skipped ---
 AGENT_ENABLED=true

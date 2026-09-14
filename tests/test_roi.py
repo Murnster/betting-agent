@@ -168,7 +168,8 @@ def test_report_headline_and_bankroll_exclude_every_side_book(monkeypatch):
     # Each side book is then reported on its own bankroll, the TD one by
     # market because its saved picks carry a NULL strategy.
     side_scopes = ledger_calls[1:]
-    assert {c.get("strategy") for c in side_scopes} == {OVERS_STRATEGY, LADDER_STRATEGY, None}
+    assert {c.get("strategy") for c in side_scopes} == {OVERS_STRATEGY, LADDER_STRATEGY,
+                                                        "parlay", None}
     td_scope = next(c for c in side_scopes if c.get("market") == TD_MARKET)
     assert td_scope["starting_bankroll"] == settings.td_bankroll
     assert "TD scorers (own bankroll)" in report
