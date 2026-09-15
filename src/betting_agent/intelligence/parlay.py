@@ -16,6 +16,17 @@ the rate they claimed, and did it pay — never as evidence of an edge.
 
 Every leg is recombined from lines the run already fetched: zero credits.
 
+Likelihood before edge. Three legs all have to land, so a ticket fills
+from the legs the model puts at PARLAY_TARGET_PROB or better, in the old
+order (props by edge, then a TD favourite, then the game sides), and only
+falls off to the next most likely leg when a slate cannot fill it from
+those. The ladder's milestone rungs are priced at 20-65% by design, so a
+rung needs PARLAY_LADDER_MIN_PROB to be a leg at all, as a TD scorer
+already did. The first live ticket (MNF, Sep 14 2026) is what set this: it
+took a 46% rushing rung on 13.7% claimed edge over a 59% receiver, because
+nothing in the fill looked at the probability (user: "they're hard enough
+to all hit").
+
 Coherence. A parlay must not argue with itself, so each leg carries a
 *narrative sign* per team: an Over, an anytime TD, a moneyline or a cover is
 `+team`; an Under on a team's player is `-team`; a game-total Over is plus
@@ -35,6 +46,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from betting_agent.accounting.ledger import LADDER_STRATEGY
 from betting_agent.intelligence.picks import BetCandidate, _candidate_game_key, _pick_label
 from betting_agent.intelligence.slate import Slate, candidates_in_slate
 from betting_agent.sports.nfl.props import normalize_player
@@ -59,7 +71,7 @@ PARLAY_MARKET = "parlay"
 PARLAY_LEGS_SGP = 3
 PARLAY_LEGS_WINDOW = 3
 PARLAY_LEAN_LEGS = (3, 5)
-PARLAY_MIN_ODDS = 300
+PARLAY_MIN_ODDS = 200
 PARLAY_STAKE = 1.0
 #: The CARDED main-book props are the picks the user tracks as real bets,
 #: so a ticket may carry at most one of them — otherwise every primetime SGP
@@ -70,8 +82,16 @@ PARLAY_STAKE = 1.0
 #: should be able to come from the extras as well"), which is why the
 #: parlays are built after the cards are selected.
 PARLAY_MAX_MAIN_LEGS = 1
-#: An anytime-TD leg needs the model this sure (P(score) at or above it).
+#: An anytime-TD leg needs the model this sure (P(score) at or above it),
+#: and so does a ladder rung: the milestone boards are priced at 20-65% by
+#: design, and the first live ticket took a 46% rung on 13.7% claimed edge
+#: (user, Sep 15 2026 — "they're hard enough to all hit").
 PARLAY_TD_MIN_PROB = 0.50
+PARLAY_LADDER_MIN_PROB = 0.50
+#: What every leg should be worth: a ticket fills from the legs the model
+#: has at or above this first, and only then from the next closest. A floor
+#: would leave slates with no ticket at all, which is not the ask.
+PARLAY_TARGET_PROB = 0.60
 
 GAME_BET_TYPES = ("moneyline", "spread", "total")
 
@@ -235,15 +255,35 @@ def _tier(c: BetCandidate) -> int:
 
 
 def _eligible(c: BetCandidate) -> bool:
+    """A leg the ticket may carry at all: positive edge, and an event the
+    model does not think is a long shot on the two boards that price them."""
     if c.edge <= 0:
         return False
     if c.market == TD_MARKET:
         return c.model_prob >= PARLAY_TD_MIN_PROB
+    if c.strategy == LADDER_STRATEGY:
+        return c.model_prob >= PARLAY_LADDER_MIN_PROB
     return True
 
 
 def _positive(pool: list[BetCandidate]) -> list[BetCandidate]:
-    return sorted((c for c in pool if _eligible(c)), key=lambda c: (_tier(c), -c.edge))
+    """Eligible legs in the order a ticket should take them.
+
+    Three legs all have to land, so likelihood comes before edge: the legs
+    the model has at PARLAY_TARGET_PROB or better go first (player props by
+    edge, then a TD favourite, then the game sides, as before), and the rest
+    follow closest-to-the-target first. So a ticket is filled from likely
+    legs when the slate has three of them and falls off to the next most
+    likely when it does not — never to the biggest claimed edge, which is
+    how a 46% rung out-ranked a 59% receiver.
+    """
+    likely, rest = [], []
+    for c in pool:
+        if _eligible(c):
+            (likely if c.model_prob >= PARLAY_TARGET_PROB else rest).append(c)
+    likely.sort(key=lambda c: (_tier(c), -c.edge))
+    rest.sort(key=lambda c: (-c.model_prob, _tier(c), -c.edge))
+    return likely + rest
 
 
 def _greedy(pool: list[BetCandidate], n: int, one_per_game: bool,
@@ -269,12 +309,14 @@ def _greedy(pool: list[BetCandidate], n: int, one_per_game: bool,
 def pick_legs(pool: list[BetCandidate], n: int, *, one_per_game: bool = False,
               min_odds: int = PARLAY_MIN_ODDS) -> list[BetCandidate]:
     """
-    Greedy over the positive-edge pool — player props by edge first, a TD
-    favourite next, the game sides last — coherent at every step and
-    carrying at most PARLAY_MAX_MAIN_LEGS main-book legs. A ticket short of
-    `min_odds` swaps its shortest-priced leg for the best
-    plus-money leg that keeps it coherent (a long shot is the brief); when no
-    swap gets it there the ticket stands as it is.
+    Greedy over the eligible pool in `_positive` order — the legs at
+    PARLAY_TARGET_PROB or better first, then the next most likely — coherent
+    at every step and carrying at most PARLAY_MAX_MAIN_LEGS main-book legs.
+    A ticket short of `min_odds` swaps its shortest-priced leg for the best
+    plus-money leg that keeps it coherent (a long shot is the brief), taking
+    that swap from the likely legs before the rest so reaching for the price
+    does not undo the point; when no swap gets it there the ticket stands as
+    it is.
     """
     ranked = _positive(pool)
     legs = _greedy(ranked, n, one_per_game)

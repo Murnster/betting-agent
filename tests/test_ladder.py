@@ -72,20 +72,27 @@ class TestLadderPolicy:
         assert LADDER_MIN_FAIR_PROB == 0.20 and LADDER_MAX_FAIR_PROB == 0.65
         assert ladder_min_rung("player_reception_yds_alternate") == 39.5
         assert ladder_min_rung("player_rush_yds") == 39.5
-        # Experimental pool (user's call): floors at the main card's MIN_EDGE tier.
-        assert ladder_edge_floor("player_rush_yds_alternate") == LADDER_EDGE_FLOORS["player_rush_yds"] == 0.03
-        assert ladder_edge_floor("player_reception_yds") == 0.03
-        assert ladder_edge_floor("player_receptions") == 0.03
-        assert ladder_edge_floor("player_rush_yds", 0.08) == 0.08
+        # Floors raised on 2026-09-15: the walk-forward has hit rate AND ROI
+        # rising with the floor, so the win rate is bought with selection
+        # rather than with shorter prices (which is why there is no
+        # probability floor — see LADDER_EDGE_FLOORS).
+        assert ladder_edge_floor("player_rush_yds_alternate") == LADDER_EDGE_FLOORS["player_rush_yds"] == 0.08
+        assert ladder_edge_floor("player_reception_yds") == 0.10
+        assert ladder_edge_floor("player_rush_yds", 0.03) == 0.03
         # Rushing turns over above 15% claimed edge; receiving yards do not.
         assert ladder_edge_cap("player_rush_yds") == 0.15 < ladder_edge_cap("player_reception_yds")
         assert set(LADDER_EDGE_CAPS) == set(LADDER_EDGE_FLOORS) == set(LADDER_MIN_RUNG) == set(LADDER_RUNGS)
 
-    def test_all_three_ladders_are_on_by_default(self):
+    def test_the_receptions_ladder_is_off_by_default(self):
+        """Negative ROI at every floor in the diagnostic, and worse as the
+        floor rises (-13.6% at 3%, -30.1% at 12%, 15% hold); TE receptions
+        realise 24.7% against 49.6% claimed. Dropped 2026-09-15 — which also
+        gives a credit per game back. The floor stays defined for a re-run."""
         from betting_agent.config import Settings
 
         markets = Settings(_env_file=None).ladder_markets.split(",")
-        assert set(markets) == {"player_receptions", "player_reception_yds", "player_rush_yds"}
+        assert set(markets) == {"player_reception_yds", "player_rush_yds"}
+        assert "player_receptions" in LADDER_EDGE_FLOORS
 
     def test_rushing_model_is_ladder_only(self):
         assert "player_rush_yds" not in MODELED_MARKETS
@@ -247,19 +254,19 @@ class TestGenerateLadderCandidates:
         assert c.bankroll_at_pick == 100.0 and c.recommended_bet > 0
         assert "ladder_pick" not in c.extra            # no lean tier: everything is a pick
 
-    def test_best_over_per_game_is_a_staked_pick_even_below_the_floor(self):
+    def test_a_game_with_nothing_above_the_floor_gets_no_entry(self):
+        """The game's best over used to be kept whatever its edge, so every
+        game had a ladder entry. That exemption carded the four worst live
+        picks — sub-3% edges on the receiving board, all losers — and went on
+        2026-09-15; a game can now simply have no rung."""
         # Main Under 59.5 at +150: implied .40 / 1.048 hold = .382 fair; model .40 → +1.8%.
         model = _Model({"star guy": {69.5: 0.44}, "main under": {59.5: 0.40}})   # +0.8% / +1.8%
-        out = _generate({"player_reception_yds": model})
-        assert len(out) == 1                       # the game's best over only
-        best = out[0]
-        assert best.player == "Main Under" and 0 < best.edge < 0.03
-        assert best.recommended_bet > 0 and best.kelly_fraction > 0 and best.strategy == "ladder"
+        assert _generate({"player_reception_yds": model}) == []
 
-    def test_further_players_must_clear_the_floor(self):
+    def test_every_player_must_clear_the_floor(self):
         model = _Model({"star guy": {69.5: 0.58}, "main under": {59.5: 0.40}})   # +14.8% / +1.8%
         assert [c.player for c in _generate({"player_reception_yds": model})] == ["Star Guy"]
-        model = _Model({"star guy": {69.5: 0.58}, "main under": {59.5: 0.42}})   # +14.8% / +3.8%
+        model = _Model({"star guy": {69.5: 0.58}, "main under": {59.5: 0.50}})   # +14.8% / +11.8%
         assert len(_generate({"player_reception_yds": model})) == 2
 
     def test_no_edge_means_no_entry(self):
@@ -294,7 +301,7 @@ class TestGenerateLadderCandidates:
 
     def test_main_line_over_qualifies_below_the_milestone(self):
         # Backup's main line is 24.5 (< 39.5): the book's own number is a real over.
-        model = _Model({"backup": {24.5: 0.56}})            # fair .50 → +6%
+        model = _Model({"backup": {24.5: 0.62}})            # fair .50 → +12%
         out = _generate({"player_reception_yds": model})
         assert len(out) == 1 and out[0].line == 24.5 and out[0].market == "player_reception_yds"
         model = _Model({"backup": {14.5: 0.90}})            # alt rung below the milestone: still out
@@ -333,10 +340,10 @@ class TestGenerateLadderCandidates:
         assert [c for c in model.calls if c[0] == "star guy"] == [("star guy", "SEA")]
 
     def test_min_edge_override_gates_the_second_player(self):
-        model = _Model({"star guy": {69.5: 0.58}, "main under": {59.5: 0.44}})  # +14.8% / +5.8%
+        model = _Model({"star guy": {69.5: 0.58}, "main under": {59.5: 0.50}})  # +14.8% / +11.8%
         assert len(_generate({"player_reception_yds": model})) == 2
-        assert len(_generate({"player_reception_yds": model}, min_edge=0.08)) == 1
-        assert _generate({"player_reception_yds": model}, min_edge=0.08)[0].extra["edge_floor"] == 0.08
+        assert len(_generate({"player_reception_yds": model}, min_edge=0.12)) == 1
+        assert _generate({"player_reception_yds": model}, min_edge=0.12)[0].extra["edge_floor"] == 0.12
 
     def test_ladder_markets_setting_is_honoured(self, monkeypatch):
         monkeypatch.setattr(props_script.settings, "ladder_markets", "player_rush_yds")

@@ -94,11 +94,14 @@ class Settings(BaseSettings):
     parlays_enabled: bool = Field(default=True)
     parlay_bankroll: float = Field(default=100.0, description="Parlay book's paper bankroll")
     ladder_markets: str = Field(
-        default="player_receptions,player_reception_yds,player_rush_yds",
+        default="player_reception_yds,player_rush_yds",
         description=(
             "Base markets whose alternate boards the ladder prices (1 credit per game "
-            "each). All three are on: the pool is an experiment by the user's choice, "
-            "even though the receptions ladder over-claims by 10-20pp in the diagnostic."
+            "each). The receptions ladder was dropped on 2026-09-15: the walk-forward "
+            "diagnostic has it negative at EVERY edge floor and worse as the floor "
+            "rises (-13.6% ROI at 3%, -20.1% at 8%, -30.1% at 12%, at a 15% hold), "
+            "with TE receptions realising 24.7% against 49.6% claimed. Add it back "
+            "here to re-open the experiment."
         ),
     )
 

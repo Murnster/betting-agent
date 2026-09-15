@@ -31,12 +31,13 @@ LAR, SF = "Los Angeles Rams", "San Francisco 49ers"
 
 
 def _prop(player, side, team, *, odds=-110, edge=0.20, market="player_reception_yds",
-          line=49.5, home=SEA, away=NE, ext="e1", strategy=None, card=False):
+          line=49.5, home=SEA, away=NE, ext="e1", strategy=None, card=False, prob=None):
+    prob = 0.6 + edge if prob is None else prob
     return BetCandidate(
         game_id=0, external_id=ext, home_team=home, away_team=away,
         game_date=date(2026, 9, 13), scheduled_game_date=date(2026, 9, 13), sport="NFL",
         bet_type="prop", pick_side=side, player=player, market=market, line=line,
-        model_prob=0.6 + edge, implied_prob=0.6, edge=edge, odds=odds,
+        model_prob=prob, implied_prob=prob - edge, edge=edge, odds=odds,
         kelly_fraction=0.02, recommended_bet=1.5, bankroll_at_pick=100.0,
         strategy=strategy, extra={"team": team, "bookmaker": "draftkings", "card": card},
     )
@@ -205,6 +206,62 @@ class TestPickLegs:
         assert pm.pick_legs([_prop("A", "under", "SEA", card=True),
                              _prop("B", "under", "SEA", card=True),
                              _prop("C", "under", "NE", card=True)], 3) == []
+
+    def test_a_likely_leg_outranks_a_bigger_edge_long_shot(self):
+        """Three legs all have to land: the 62% receiver beats the 35% rung
+        even though the rung claims twice the edge."""
+        pool = [
+            _prop("A", "under", "SEA", edge=0.10, prob=0.72),
+            _prop("B", "under", "NE", edge=0.30, prob=0.35, strategy="overs", odds=200),
+            _prop("C", "under", "NE", edge=0.08, prob=0.62, strategy="overs"),
+            _prop("D", "under", "NE", edge=0.25, prob=0.40, strategy="overs", odds=180),
+        ]
+        legs = pm.pick_legs(pool, 3, min_odds=0)
+        assert [leg.player for leg in legs] == ["A", "C", "D"]  # D fills, but last
+
+    def test_a_ladder_rung_the_model_calls_a_long_shot_is_not_a_leg(self):
+        """The MNF ticket (Sep 14 2026): a 46.3% rushing rung at 13.7%
+        claimed edge was taken over a 59.3% receiver, and lost."""
+        rung = _prop("J.K. Dobbins", "over", "NE", edge=0.137, prob=0.463,
+                     market="player_rush_yds_alternate", line=69.5, strategy="ladder", odds=193)
+        assert not pm._eligible(rung)
+        pool = [_prop("Marvin Mims Jr.", "over", "SEA", edge=0.312, prob=0.731, odds=125),
+                _prop("Adam Trautman", "over", "SEA", edge=0.125, prob=0.794, odds=-241),
+                _prop("Courtland Sutton", "over", "SEA", edge=0.089, prob=0.593,
+                      strategy="overs", odds=-115),
+                rung]
+        legs = pm.pick_legs(pool, 3)
+        # Mims and Trautman clear the target and go by edge; Sutton, at 59.3%,
+        # is the next most likely and fills the third slot.
+        assert [leg.player for leg in legs] == ["Marvin Mims Jr.", "Adam Trautman",
+                                                "Courtland Sutton"]
+        assert pm.combined_odds(legs) >= pm.PARLAY_MIN_ODDS
+
+    def test_the_fallback_takes_the_next_most_likely_not_the_next_biggest_edge(self):
+        pool = [
+            _prop("A", "under", "SEA", edge=0.20, prob=0.68),
+            _prop("B", "under", "NE", edge=0.05, prob=0.58, strategy="overs"),
+            _prop("C", "under", "NE", edge=0.35, prob=0.45, strategy="overs", odds=150),
+        ]
+        legs = pm.pick_legs(pool, 2, min_odds=0)
+        assert [leg.player for leg in legs] == ["A", "B"]
+
+    def test_a_short_ticket_swaps_in_the_likeliest_plus_money_leg(self):
+        """Reaching for the price must not undo the point: the +150 leg the
+        model likes wins over the +900 one it does not."""
+        pool = [
+            _prop("A", "under", "SEA", edge=0.20, prob=0.80, odds=-300),
+            _prop("B", "under", "SEA", edge=0.15, prob=0.75, odds=-300, strategy="overs"),
+            _prop("C", "under", "NE", edge=0.10, prob=0.70, odds=-300, strategy="overs"),
+            _prop("D", "under", "NE", edge=0.05, prob=0.65, odds=150, strategy="overs"),
+            _prop("E", "under", "NE", edge=0.30, prob=0.35, odds=900, strategy="overs"),
+        ]
+        legs = pm.pick_legs(pool, 3)
+        assert "D" in {leg.player for leg in legs} and "E" not in {leg.player for leg in legs}
+        assert pm.combined_odds(legs) >= pm.PARLAY_MIN_ODDS
+
+    def test_two_hundred_is_the_price_floor(self):
+        assert pm.PARLAY_MIN_ODDS == 200
 
     def test_cross_game_takes_one_leg_per_game(self):
         pool = [_prop("A", "under", "SEA", edge=0.4), _prop("B", "under", "NE", edge=0.39),

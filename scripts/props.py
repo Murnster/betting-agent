@@ -745,10 +745,15 @@ def generate_ladder_candidates(
                            "recent_games": _recent_games(model, pk),
                            "edge_floor": floor},
                 ))
-        # One rung per player (best edge across rungs and markets); the game's
-        # best over is always kept, the rest must clear their market's floor.
+        # One rung per player (best edge across rungs and markets), and every
+        # rung clears its market's floor. The game's best used to be kept
+        # whatever its edge (Sep 8 2026: a game should always have a ladder
+        # entry) — that exemption is what carded the four worst live picks,
+        # all sub-3% edges on the receiving board, all losers, so raising the
+        # floors would have done nothing without removing it (2026-09-15).
+        # A game with no rung above the floor now simply has no ladder entry.
         game_cands = sorted(_deduplicate_by_player(game_cands), key=lambda c: c.edge, reverse=True)
-        out.extend(game_cands[:1] + [c for c in game_cands[1:] if c.edge >= c.extra["edge_floor"]])
+        out.extend(c for c in game_cands if c.edge >= c.extra["edge_floor"])
 
     if injuries is not None or qb1:
         flags = prop_injury_flags(out, injuries, qb1, player_teams(out))

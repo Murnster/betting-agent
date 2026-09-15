@@ -429,7 +429,14 @@ applied):
   the framing: an experiment, not an edge. Phase-1 dials left for later:
   (a) legs are drawn only from what the run already scored (the section
   candidates post-floor plus every game side) — widening to below-floor
-  lines is a `min_edge` pass on the generators; (b) the same-game price is
+  lines is a `min_edge` pass on the generators, and it costs no credits
+  (every line on the board is already projected and priced; the sections are
+  just what cleared the floors). Considered and deferred on 2026-09-15: with
+  legs now ordered by probability and falling off to the next most likely,
+  the existing pool filled the tickets, and sub-floor picks would have had
+  to land somewhere — the extras book is the carded-vs-off-card A/B at fixed
+  floors, so mixing a weaker tier into it would stop that comparison being
+  like-for-like. Revisit if tickets start coming up short; (b) the same-game price is
   the product of the leg prices and the book's real SGP price is lower, so
   the review must read SGP tickets' ROI as an upper bound and the cross-game
   ones as honest; (c) the lean parlay is built from the 12:45 Sunday run's
@@ -438,7 +445,26 @@ applied):
   would then be saved eight hours out, which the Sep 13 change stopped).
   Review with the ladder and the TD window: hit rate vs mean claimed
   probability per ticket kind (sgp / window / leans), and whether any kind
-  pays for its misses.
+  pays for its misses. Leg quality was tightened on 2026-09-15 after the
+  first live ticket (user: "they're hard enough to all hit"): legs are
+  ordered by model probability with a 0.60 target, a ladder rung needs 0.50
+  like a TD scorer, and `PARLAY_MIN_ODDS` fell to +200. So the book's record
+  starts from the Sep 15 cards — the one MNF ticket before it was built
+  under the old fill.
+- [x] **Raise the ladder bar (2026-09-15, user: "should we raise the bar for
+  ladder picks a little to try and get a higher win percentage that still
+  provides a decent edge?").** Re-ran `scripts/ladder_diagnostic.py` and moved
+  three things: `LADDER_EDGE_FLOORS` to 8% rushing / 10% receiving yards (hit
+  rate and ROI both rise with the floor), the receptions board off by default
+  in `settings.ladder_markets` (negative at every floor, worse as it rises;
+  TE receptions 24.7% realised vs 49.6% claimed), and the game's-best-rung
+  exemption out of `generate_ladder_candidates` (it kept sub-floor rungs so
+  every game had an entry, and would have made the floors a no-op). A
+  probability floor was considered and rejected: at a fixed edge, ROI falls
+  as fair probability rises, so `LADDER_MIN_FAIR_PROB` stays 0.20. The
+  receiving-yards 12% floor (+21.1% ROI at a 15% hold vs +10.6% at 10%) is
+  the next dial if 1.95 rungs a game is acceptable. Do NOT re-tune from the
+  live book — it was 11 picks, 95% interval 1-54%.
 - [ ] **Review the card width after ~6 weeks of extras data.** The whole point
   of the extras channel: compare its all-time line with the main card's. If
   the extras keep pace, widen `WINDOW_PROP_CAP` / `PRIMETIME_PROP_CAP`; if

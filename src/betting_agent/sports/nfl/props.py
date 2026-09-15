@@ -157,10 +157,23 @@ LADDER_MIN_RUNG = {
 #: yards over-claim ~6pp at 10% (44.1% vs 50.1%, +17%) and ~3pp at 12%;
 #: receptions over-claim 10-20pp at every floor. Expect the pool to run
 #: under its claimed probabilities; the point is to see by how much.
+#: Raised from the main card's 3% tier on 2026-09-15 (user: "raise the bar
+#: for ladder picks a little to try and get a higher win percentage that
+#: still provides a decent edge"). The walk-forward has both hit rate and
+#: ROI rising with the floor, so this buys the win rate without buying it
+#: from the price: rushing 43.7% hit / +23.5% ROI at a 3% floor becomes
+#: 45.5% / +31.1% at 8%, receiving yards 43.5% / +2.1% becomes 47.4% /
+#: +21.1% at 12% (best rung per player, 15% hold — the proxy book is soft,
+#: so read the ordering, not the level). Receiving yards sits at 10%: the
+#: 12% bucket is better still but drops the board to 1.95 rungs a game.
+#: A probability floor was considered and rejected — at a fixed edge, ROI
+#: FALLS as fair probability rises (receiving yards +45.1% at fair 0.10-0.20
+#: against -8.6% at 0.50-0.65), because the extra wins are bought at shorter
+#: prices. LADDER_MIN_FAIR_PROB therefore stays at 0.20.
 LADDER_EDGE_FLOORS = {
-    "player_receptions": 0.03,
-    "player_reception_yds": 0.03,
-    "player_rush_yds": 0.03,
+    "player_receptions": 0.08,   # board is off (settings.ladder_markets); kept for a re-run
+    "player_reception_yds": 0.10,
+    "player_rush_yds": 0.08,
 }
 #: Edge at or above which a rung is NOT bet: realised probability turns
 #: over above 15% claimed edge for rushing yards (claimed 41%, realised 35%
